@@ -27,6 +27,8 @@ export default function LocalRecognitionPage() {
   const [candidateTags, setCandidateTags] = useState<Tag[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [candidateLoading, setCandidateLoading] = useState(false);
+  const [activeFacetIndex, setActiveFacetIndex] = useState(0);
+  const [facetChoice, setFacetChoice] = useState<Record<string, number>>({});
   const [hashByKey, setHashByKey] = useState<Record<string, string>>({});
   const [hashProgress, setHashProgress] = useState(0);
   const [hydrated, setHydrated] = useState(false);
@@ -45,10 +47,27 @@ export default function LocalRecognitionPage() {
     return groupTagValues(Array.from(unique.values()));
   }, [assignments]);
   const visibleFiles = tagFilters.size ? files.filter(file => { const tokens = new Set((assignments[fileKey(file)] || []).map(tagToken)); return Array.from(tagFilters).every(token => tokens.has(token)); }) : files;
+  const keyboardGroups = useMemo(() => groupTagValues(mergeTags(candidateTags, result?.tags || [])), [candidateTags, result]);
+  const activeKeyboardFacet = keyboardGroups[activeFacetIndex % Math.max(1, keyboardGroups.length)]?.facet;
 
   useEffect(() => { const saved = localStorage.getItem("vita-system-prompt"); if (saved) setPrompt(saved); }, []);
   useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => setCandidateTags(body.tags || [])).finally(() => setCatalogLoaded(true)); }, []);
   useEffect(() => { if (!catalogLoaded) return; const timer = window.setTimeout(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_catalog", tags: candidateTags }) }).catch(() => undefined); }, 400); return () => window.clearTimeout(timer); }, [candidateTags, catalogLoaded]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null; if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
+      if ((event.key === "ArrowUp" || event.key === "ArrowDown") && visibleFiles.length) {
+        event.preventDefault(); const index = Math.max(0, current ? visibleFiles.indexOf(current) : 0); const next = Math.max(0, Math.min(visibleFiles.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); setCurrent(visibleFiles[next]); setResult(null); return;
+      }
+      if (event.key === "Enter" && keyboardGroups.length) { event.preventDefault(); setActiveFacetIndex(index => (index + 1) % keyboardGroups.length); return; }
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && keyboardGroups.length) {
+        event.preventDefault(); const group = keyboardGroups[activeFacetIndex % keyboardGroups.length]; if (!group?.tags.length) return;
+        const previous = facetChoice[group.facet] ?? -1; const direction = event.key === "ArrowRight" ? 1 : -1; const next = (previous + direction + group.tags.length) % group.tags.length;
+        setFacetChoice(old => ({ ...old, [group.facet]: next })); chooseFacetTag(group.tags[next]);
+      }
+    };
+    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  });
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
   useEffect(() => {
     if (!hydrated || !files.length) return;
@@ -152,13 +171,20 @@ export default function LocalRecognitionPage() {
   const useCandidate = (tag: Tag) => {
     setResult(old => { const tags = old?.tags || []; const existing = tags.findIndex(item => item.facet === tag.facet && item.name === tag.name); if (existing >= 0) { setSelectedTags(selected => new Set(selected).add(existing)); return old; } const index = tags.length; setSelectedTags(selected => new Set(selected).add(index)); return { summary: old?.summary || "人工选择候选标签", tags: [...tags, { ...tag, confidence: 1, reason: "从候选标签库人工选择" }] }; });
   };
+  const chooseFacetTag = (tag: Tag) => {
+    setResult(old => {
+      const tags = old?.tags || []; let index = tags.findIndex(item => item.facet === tag.facet && item.name === tag.name); const nextTags = index >= 0 ? tags : [...tags, { ...tag, confidence: 1, reason: "快捷键从候选标签库选择" }]; if (index < 0) index = nextTags.length - 1;
+      setSelectedTags(selected => { const next = new Set(Array.from(selected).filter(item => tags[item]?.facet !== tag.facet)); next.add(index); return next; });
+      return { summary: old?.summary || "快捷键选择候选标签", tags: nextTags };
+    });
+  };
   const removeRecommended = (index: number) => { setResult(old => old ? { ...old, tags: old.tags.filter((_, i) => i !== index) } : old); setSelectedTags(old => new Set(Array.from(old).filter(i => i !== index).map(i => i > index ? i - 1 : i))); };
 
   return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
     <header style={{ maxWidth: 1180, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}>
       <Link href="/session/demo" style={{ color: "#287b57", textDecoration: "none" }}>← 返回工作台</Link><h2 style={{ margin: 0 }}>本地素材整理</h2><span style={{ color: "#849089", fontSize: 12, flex: 1 }}>原文件留在电脑，仅识别内容发送给腾讯云</span><button disabled={!files.length} onClick={exportTagCsv} style={{ ...folderButton, border: 0, opacity: files.length ? 1 : .45 }}>导出文件名-标签 CSV</button>
     </header>
-    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span></div>
+    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span><span style={{ marginLeft: 14, color: "#88938c", fontSize: 9 }}>快捷键：↑↓ 素材 · ←→ 标签 · Enter 下一类型</span></div>
     <div style={{ maxWidth: 1180, margin: "auto", display: "grid", gridTemplateColumns: "270px minmax(360px,1fr) 350px", gap: 14 }}>
       <section style={card}>
         <h3 style={heading}>第一步：选择本地文件夹</h3>
@@ -170,7 +196,7 @@ export default function LocalRecognitionPage() {
       </section>
       <section style={card}>
         <h3 style={heading}>第二步：查看当前素材</h3>
-        <div style={{ height: 420, background: "#202421", display: "grid", placeItems: "center", borderRadius: 8, overflow: "hidden" }}>{preview && current?.type.startsWith("video/") ? <video src={preview} controls style={{ maxWidth: "100%", maxHeight: "100%" }} /> : preview ? <img src={preview} alt="本地预览" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ color: "#9ba39e" }}>请先选择文件夹</span>}</div>
+        <div style={{ height: 420, background: "#202421", display: "grid", placeItems: "center", borderRadius: 8, overflow: "hidden" }}>{preview && current?.type.startsWith("video/") ? <video key={preview} src={preview} controls autoPlay muted playsInline style={{ maxWidth: "100%", maxHeight: "100%" }} /> : preview ? <img src={preview} alt="本地预览" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ color: "#9ba39e" }}>请先选择文件夹</span>}</div>
         <p style={{ fontSize: 10, color: "#87918b" }}>{current ? `${current.type || "媒体"} · ${(current.size / 1024 / 1024).toFixed(1)} MB · ${hashByKey[fileKey(current)]?.slice(0, 12) || "计算哈希中"}` : "未选择媒体"}</p>
         {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title={`类型：${tag.facet}；点击移除`} key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tagLabel(tag)} ×</button>)}</div>}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}><h3 style={heading}>System Prompt</h3><button onClick={() => { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); }} style={{ ...smallButton, marginBottom: 8 }}>恢复标签识别默认指令</button></div>
@@ -188,7 +214,7 @@ export default function LocalRecognitionPage() {
         {!result && <p style={hint}>识别完成后，这里会显示画面摘要、Facet、标签、置信度和视觉依据。</p>}
         {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet} <span style={{ color: "#adb4af" }}>· AI 推荐</span></div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n双击可修改标签`} onClick={() => setSelectedTags(old => toggleSet(old, index))} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tag.name}<span title="删除这项推荐" onClick={event => { event.stopPropagation(); removeRecommended(index); }} style={{ marginLeft: 7, color: "#a16c6c", fontWeight: 400 }}>×</span></button>)}</div></div>)}</div></>}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}><h3 style={heading}>候选标签库</h3><button disabled={candidateLoading} onClick={() => void generateCandidates()} style={smallButton}>{candidateLoading ? "生成中…" : "从 System Prompt 生成"}</button></div>
-        {candidateTags.length === 0 ? <p style={hint}>先从 System Prompt 生成，或在下方手工新增。</p> : groupTagValues(candidateTags).map(group => <div key={group.facet} style={{ marginBottom: 9 }}><div style={{ color: "#7d8881", fontSize: 9, marginBottom: 4 }}>{group.facet}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>{group.tags.map(tag => <button key={tagToken(tag)} title="点击加入本次标签；右侧 × 从候选库删除" onClick={() => useCandidate(tag)} style={capsule}>{tag.name}<span onClick={event => { event.stopPropagation(); setCandidateTags(old => old.filter(item => tagToken(item) !== tagToken(tag))); }} style={{ marginLeft: 7, color: "#a16c6c" }}>×</span></button>)}</div></div>)}
+        {candidateTags.length === 0 ? <p style={hint}>先从 System Prompt 生成，或在下方手工新增。</p> : groupTagValues(candidateTags).map(group => <div key={group.facet} style={{ marginBottom: 9, padding: activeKeyboardFacet === group.facet ? 7 : 0, border: activeKeyboardFacet === group.facet ? "1px solid #8fbea3" : "1px solid transparent", borderRadius: 7, background: activeKeyboardFacet === group.facet ? "#f3faf5" : "transparent" }}><div style={{ color: activeKeyboardFacet === group.facet ? "#287b57" : "#7d8881", fontSize: 9, marginBottom: 4 }}>{group.facet}{activeKeyboardFacet === group.facet && " · 当前快捷键类型"}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>{group.tags.map((tag, tagIndex) => <button key={tagToken(tag)} title="点击加入本次标签；右侧 × 从候选库删除" onClick={() => { useCandidate(tag); setFacetChoice(old => ({ ...old, [group.facet]: tagIndex })); }} style={{ ...capsule, ...(facetChoice[group.facet] === tagIndex ? selectedCapsule : {}) }}>{tag.name}<span onClick={event => { event.stopPropagation(); setCandidateTags(old => old.filter(item => tagToken(item) !== tagToken(tag))); }} style={{ marginLeft: 7, color: "#a16c6c" }}>×</span></button>)}</div></div>)}
         <h3 style={{ ...heading, marginTop: 14 }}>新增候选标签</h3><div style={{ display: "grid", gridTemplateColumns: "90px 1fr 58px", gap: 5 }}><input value={manualFacet} onChange={e => setManualFacet(e.target.value)} placeholder="类型" style={tagInput} /><input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="标签名称" style={tagInput} /><button style={smallButton} onClick={() => { if (!manualName.trim()) return; setCandidateTags(old => mergeTags(old, [{ facet: manualFacet.trim() || "其他", name: manualName.trim(), confidence: 1, reason: "人工候选" }])); setManualName(""); }}>加入候选</button></div>
         <button disabled={!result || !selectedTags.size || !(selectedFiles.size || current)} onClick={() => { const targets = selectedFiles.size ? selectedFiles : new Set(current ? [fileKey(current)] : []); const tags = (result?.tags || []).filter((_, i) => selectedTags.has(i)); setAssignments(old => { const next = { ...old }; targets.forEach(key => { const existing = next[key] || []; next[key] = [...existing, ...tags.filter(t => !existing.some(x => x.facet === t.facet && x.name === t.name))]; }); return next; }); }} style={{ ...folderButton, border: 0, width: "100%", marginTop: 14, opacity: !result || !selectedTags.size ? .5 : 1 }}>＋ 添加 {selectedTags.size} 个标签到 {selectedFiles.size || (current ? 1 : 0)} 个素材</button>
       </section>
