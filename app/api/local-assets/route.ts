@@ -4,7 +4,7 @@ import path from "node:path";
 
 export const runtime = "nodejs";
 
-type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string; status?: "suggested" | "confirmed"; source?: string };
+type Tag = { facet: string; path?: string[]; relatedSegments?: string[]; name: string; confidence: number; reason: string; status?: "suggested" | "confirmed"; source?: string };
 type AssetState = { hash: string; filename: string; relativePath?: string; sourceContext?: string[]; size: number; mimeType: string; lastModified: number; tags: Tag[]; updatedAt: string };
 type Store = { version: 1; assets: Record<string, AssetState>; tagCatalog?: Tag[] };
 const dataDir = process.env.FIELDNOTE_DATA_DIR || "/data/fieldnote-prototype";
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 function validHash(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
 function sanitizeTags(tags: unknown): Tag[] {
   if (!Array.isArray(tags)) return [];
-  return tags.slice(0, 200).map(tag => ({ facet: String(tag?.facet || "其他").slice(0, 80), path: Array.isArray(tag?.path) ? tag.path.slice(0, 8).map((item: unknown) => String(item).slice(0, 120)) : [], name: String(tag?.name || "").slice(0, 160), confidence: Number(tag?.confidence || 0), reason: String(tag?.reason || "").slice(0, 500), status: tag?.status === "suggested" ? "suggested" as const : "confirmed" as const, source: String(tag?.source || "manual").slice(0, 40) })).filter(tag => tag.name && tag.facet !== "原始目录");
+  return tags.slice(0, 300).map(tag => ({ facet: String(tag?.facet || "其他").slice(0, 80), path: Array.isArray(tag?.path) ? tag.path.slice(0, 8).map((item: unknown) => String(item).slice(0, 120)) : [], relatedSegments: Array.isArray(tag?.relatedSegments) ? tag.relatedSegments.slice(0, 20).map((item: unknown) => String(item).slice(0, 160)) : [], name: String(tag?.name || "").slice(0, 160), confidence: Number(tag?.confidence || 0), reason: String(tag?.reason || "").slice(0, 500), status: tag?.status === "suggested" ? "suggested" as const : "confirmed" as const, source: String(tag?.source || "manual").slice(0, 40) })).filter(tag => tag.name && tag.facet !== "原始目录");
 }
 async function writeCsvBackup(store: Store) {
   const rows = [["文件名", "相对路径", "SHA256", "已确认标签", "原始目录线索", "更新时间"]];

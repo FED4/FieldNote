@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string; status?: "suggested" | "confirmed"; source?: string };
+type Tag = { facet: string; path?: string[]; relatedSegments?: string[]; name: string; confidence: number; reason: string; status?: "suggested" | "confirmed"; source?: string };
 type VitaResult = { summary: string; tags: Tag[] };
 
 const defaultPrompt = `你是“工业现场多模态媒体整理助手”。
@@ -12,9 +12,18 @@ const defaultPrompt = `你是“工业现场多模态媒体整理助手”。
 
 核心原则：只有两个正式 Facet：1. 工段 2. 设备。其他信息全部作为 Context，不创建额外 Facet。
 
-【工段】表示该媒体最可能属于哪个正式生产工段。优先使用项目工艺资料中的正式名称：原矿工段、选矿A工段、选矿B工段、脱水工段、环保废水处理工段。允许多个候选并按置信度排序；无法确认时不要猜测。
+【工段与设备候选关系】工段表示媒体所属生产区域；设备表示画面或语音能够确认的主要设备。工段确认后，优先从该工段的关联设备中推荐；同名设备可以属于多个工段。关系是候选约束和推理线索，不是事实证据，视觉或语音冲突时仍应降低置信度或选择不确定。
 
-【设备】表示画面、语音或其他证据中能够确认的主要设备。优先使用标准名称：滚筒筛、贮矿斗、脱水筛、擦洗机、受阻沉降机、水力分级机、螺旋溜槽、永磁筒式磁选机、立环强磁磁选机、浮选机、调浆桶、真空过滤机、砂浆泵。一张媒体可以包含多个设备。只有证据充分时才输出具体名称，不要凭模糊外观猜测型号或编号。
+- 原砂工段：仓壁振动器、原矿堆棚、滚筒筛、电磁振动给料机、砂浆池、砂浆泵、砂浆矿斗、胶带输送机、脱水筛、轮式装载机
+- 循环水泵房：取水渣浆泵、变频系统、循环水泵、排污泵、消防水池、消防水泵、渣浆泵、物理循环水池、磁尾循环水池
+- 浮选循环水池：提升泵、浮选药剂循环水池、渣浆泵、生化水处理系统、立式渣浆泵
+- 环保废水处理系统：一体式空压机、不锈钢水箱、压滤机、压滤机进料泵、反冲洗泵、微热式吸附干燥机、浓浆泵、浓缩池、电动葫芦
+- 脱水工段：可逆胶带输送机、带式真空过滤机、气动犁式卸料器、水环真空泵组、渣浆泵、玻璃砂库、立式渣浆泵、胶带输送机、进水管道泵、重尾、磁尾脱水库、长石精砂库
+- 选矿工段A：仓壁振动器、分矿器、双槽擦洗机、受阻沉降机、定量给料机、气动犁式卸料器、水力分级机、永磁筒式磁选机、渣浆泵、滚筒筛、电动葫芦、砂浆池、砂浆矿斗、立环高梯度磁选机、缓冲仓、胶带输送机、螺旋溜槽、行车
+- 选矿工段B：仓壁振动器、储药罐、加药搅拌柜、加药机、加药泵、定量给料机、带式真空过滤机、排污泵、插桶泵电机、水环真空泵组、浮选机、渣浆泵、电动葫芦、砂浆池、管道加压泵、管道泵、缓冲仓、耐腐蚀泵、药剂搅拌槽、药剂箱、行车、调浆桶
+- 采坑：采砂船
+
+允许多个候选并按置信度排序；无法确认时不要猜测。只有证据充分时才输出具体设备名称，不要凭模糊外观猜测型号或编号。
 
 【Context】除工段和设备外，尽量提取：process_context（流程位置和作用）、location_context（空间信息）、material_context（物料）、activity_context（正在发生什么）、state_context（可观察或明确听到的状态）、problem_context（有语音、会议或明显视觉证据的问题）、observation（1~3句画面描述）、discussion_context（讨论内容）。Context 不是标签，不要求固定词表。需要检测才能确认的问题写“待检测结果确认”，不要直接下结论。
 
@@ -76,10 +85,12 @@ export default function LocalRecognitionPage() {
     return groupTagValues(Array.from(unique.values()));
   }, [assignments]);
   const visibleFiles = tagFilters.size ? files.filter(file => { const tokens = new Set((assignments[fileKey(file)] || []).map(tagToken)); return Array.from(tagFilters).every(token => tokens.has(token)); }) : files;
-  const keyboardGroups = useMemo(() => groupTagValues(mergeTags(candidateTags, result?.tags || [])), [candidateTags, result]);
+  const currentSegments = current ? (assignments[fileKey(current)] || []).filter(tag => tag.facet === "工段").map(tag => tag.name) : [];
+  const filteredCandidateTags = candidateTags.filter(tag => tag.facet !== "设备" || !currentSegments.length || !tag.relatedSegments?.length || tag.relatedSegments.some(segment => currentSegments.includes(segment)));
+  const keyboardGroups = useMemo(() => groupTagValues(mergeTags(filteredCandidateTags, result?.tags || [])), [filteredCandidateTags, result]);
   const activeKeyboardFacet = keyboardGroups[activeFacetIndex % Math.max(1, keyboardGroups.length)]?.facet;
 
-  useEffect(() => { const version = localStorage.getItem("vita-system-prompt-version"); const saved = localStorage.getItem("vita-system-prompt"); if (version === "2" && saved) setPrompt(saved); else { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); localStorage.setItem("vita-system-prompt-version", "2"); } }, []);
+  useEffect(() => { const version = localStorage.getItem("vita-system-prompt-version"); const saved = localStorage.getItem("vita-system-prompt"); if (version === "3" && saved) setPrompt(saved); else { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); localStorage.setItem("vita-system-prompt-version", "3"); } }, []);
   useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => { if (!candidateGenerationStartedRef.current) setCandidateTags(ensureUncertain(cleanCandidateTags(body.tags || []))); }).finally(() => setCatalogLoaded(true)); }, []);
   useEffect(() => { if (!catalogLoaded) return; const timer = window.setTimeout(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_catalog", tags: candidateTags }) }).catch(() => undefined); }, 400); return () => window.clearTimeout(timer); }, [candidateTags, catalogLoaded]);
   useEffect(() => {
@@ -288,7 +299,7 @@ export default function LocalRecognitionPage() {
         {!result && <p style={hint}>识别完成后，这里会显示画面摘要、Facet、标签、置信度和视觉依据。</p>}
         {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet} <span style={{ color: "#adb4af" }}>· AI 推荐</span></div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n点击立即应用；双击可修改标签`} onClick={() => chooseFacetTag(tag)} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tag.name}<span title="删除这项推荐" onClick={event => { event.stopPropagation(); removeRecommended(index); }} style={{ marginLeft: 7, color: "#a16c6c", fontWeight: 400 }}>×</span></button>)}</div></div>)}</div></>}
         <h3 style={{ ...heading, marginTop: 14 }}>候选标签库</h3>
-        {candidateTags.length === 0 ? <p style={hint}>System Prompt 没有生成候选，可在下方手工新增。</p> : groupTagValues(candidateTags).map(group => <div key={group.facet} style={{ marginBottom: 9, padding: activeKeyboardFacet === group.facet ? 7 : 0, border: activeKeyboardFacet === group.facet ? "1px solid #8fbea3" : "1px solid transparent", borderRadius: 7, background: activeKeyboardFacet === group.facet ? "#f3faf5" : "transparent" }}><div style={{ color: activeKeyboardFacet === group.facet ? "#287b57" : "#7d8881", fontSize: 9, marginBottom: 4 }}>{group.facet}{activeKeyboardFacet === group.facet && " · 当前快捷键类型"}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>{group.tags.map((tag, tagIndex) => <button key={tagToken(tag)} title={tag.name === "不确定" ? "证据不足时使用的保留候选" : "点击立即应用；右侧 × 从候选库删除"} onClick={() => { chooseFacetTag(tag); setFacetChoice(old => ({ ...old, [group.facet]: tagIndex })); }} style={{ ...capsule, ...(facetChoice[group.facet] === tagIndex ? selectedCapsule : {}) }}>{tag.name}{tag.name !== "不确定" && <span onClick={event => { event.stopPropagation(); setCandidateTags(old => old.filter(item => tagToken(item) !== tagToken(tag))); }} style={{ marginLeft: 7, color: "#a16c6c" }}>×</span>}</button>)}</div></div>)}
+        {filteredCandidateTags.length === 0 ? <p style={hint}>System Prompt 没有生成候选，可在下方手工新增。</p> : groupTagValues(filteredCandidateTags).map(group => <div key={group.facet} style={{ marginBottom: 9, padding: activeKeyboardFacet === group.facet ? 7 : 0, border: activeKeyboardFacet === group.facet ? "1px solid #8fbea3" : "1px solid transparent", borderRadius: 7, background: activeKeyboardFacet === group.facet ? "#f3faf5" : "transparent" }}><div style={{ color: activeKeyboardFacet === group.facet ? "#287b57" : "#7d8881", fontSize: 9, marginBottom: 4 }}>{group.facet}{activeKeyboardFacet === group.facet && " · 当前快捷键类型"}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>{group.tags.map((tag, tagIndex) => <button key={tagToken(tag)} title={tag.name === "不确定" ? "证据不足时使用的保留候选" : `点击立即应用${tag.relatedSegments?.length ? ` · 关联：${tag.relatedSegments.join("、")}` : ""}；右侧 × 从候选库删除`} onClick={() => { chooseFacetTag(tag); setFacetChoice(old => ({ ...old, [group.facet]: tagIndex })); }} style={{ ...capsule, ...(facetChoice[group.facet] === tagIndex ? selectedCapsule : {}) }}>{tag.name}{tag.name !== "不确定" && <span onClick={event => { event.stopPropagation(); setCandidateTags(old => old.filter(item => tagToken(item) !== tagToken(tag))); }} style={{ marginLeft: 7, color: "#a16c6c" }}>×</span>}</button>)}</div></div>)}
         <h3 style={{ ...heading, marginTop: 14 }}>新增候选标签</h3><div style={{ display: "grid", gridTemplateColumns: "90px 1fr 58px", gap: 5 }}><input value={manualFacet} onChange={e => setManualFacet(e.target.value)} placeholder="类型" style={tagInput} /><input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="标签名称" style={tagInput} /><button style={smallButton} onClick={() => { if (!manualName.trim()) return; setCandidateTags(old => ensureUncertain(cleanCandidateTags([...old, { facet: manualFacet.trim() || "其他", name: manualName.trim(), confidence: 1, reason: "人工候选" }]))); setManualName(""); }}>加入候选</button></div>
       </section>
     </div>
@@ -317,8 +328,8 @@ function mergeTags(current: Tag[], incoming: Tag[]) { const merged = new Map(cur
 function groupTagValues(tags: Tag[]) { const groups = new Map<string, Tag[]>(); tags.forEach(tag => groups.set(tag.facet || "其他", [...(groups.get(tag.facet || "其他") || []), tag])); return Array.from(groups, ([facet, values]) => ({ facet, tags: values.sort((a, b) => a.name === "不确定" ? -1 : b.name === "不确定" ? 1 : tagLabel(a).localeCompare(tagLabel(b), "zh-CN")) })); }
 function ensureUncertain(tags: Tag[]) { const facets = Array.from(new Set(tags.map(tag => tag.facet || "其他"))); return mergeTags(facets.map(facet => ({ facet, name: "不确定", confidence: 1, reason: "证据不足时人工选择的保留候选" })), tags); }
 function cleanCandidateTags(tags: Tag[]) {
-  const cleaned = tags.map(tag => ({ ...tag, facet: String(tag.facet || "其他").trim(), name: String(tag.name || "").trim() })).filter(tag => tag.name);
-  const unique = new Map<string, Tag>(); cleaned.forEach(tag => unique.set(tagToken(tag), tag)); return Array.from(unique.values());
+  const cleaned = tags.map(tag => ({ ...tag, facet: String(tag.facet || "其他").trim(), name: String(tag.name || "").trim(), relatedSegments: Array.from(new Set((tag.relatedSegments || []).map(value => String(value).trim()).filter(Boolean))) })).filter(tag => tag.name);
+  const unique = new Map<string, Tag>(); cleaned.forEach(tag => { const previous = unique.get(tagToken(tag)); unique.set(tagToken(tag), previous ? { ...tag, relatedSegments: Array.from(new Set([...(previous.relatedSegments || []), ...(tag.relatedSegments || [])])) } : tag); }); return Array.from(unique.values());
 }
 async function sha256(file: File) { const bytes = await file.arrayBuffer(); const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join(""); }
 function fileDataUrl(file: Blob) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); }); }
