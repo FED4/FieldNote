@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
   const key = process.env.TENCENT_VITA_API_KEY;
   if (!key) return NextResponse.json({ error: "服务器未读取到 TENCENT_VITA_API_KEY" }, { status: 503 });
 
-  const { mediaDataUrl, imageDataUrl, systemPrompt, voiceContext, sourceContext } = await request.json() as { mediaDataUrl?: string; imageDataUrl?: string; systemPrompt?: string; voiceContext?: string; sourceContext?: string[] };
+  const { mediaDataUrl, imageDataUrl, systemPrompt, voiceContext, sourceContext, candidateTags } = await request.json() as { mediaDataUrl?: string; imageDataUrl?: string; systemPrompt?: string; voiceContext?: string; sourceContext?: string[]; candidateTags?: Array<{ facet?: string; name?: string; relatedSegments?: string[] }> };
   const media = mediaDataUrl || imageDataUrl;
   const mediaKind = media?.startsWith("data:image/") ? "image" : media?.startsWith("data:video/") ? "video" : null;
   if (!mediaKind && !voiceContext?.trim()) return NextResponse.json({ error: "请选择图片/视频，或先输入当前素材语音" }, { status: 400 });
@@ -19,8 +19,10 @@ export async function POST(request: NextRequest) {
   const mediaContext = mediaKind ? `\n\n本次提供了${mediaKind === "video" ? "视频" : "图片"}，可以引用其中实际可见的视觉证据。` : "\n\n本次没有提供任何图片或视频。禁止声称看到了画面、设备、压力表或其他视觉信息；所有 reason 只能引用语音和原始目录，并应对无法验证的信息降低置信度。";
   const promptIsMeta = systemPrompt?.includes("标签策略设计助手") || systemPrompt?.includes("帮助我编写一份高质量的 System Prompt");
   const effectivePrompt = promptIsMeta ? "你是现场考察媒体标签助手。直接分析输入并推荐可检索的独立标签，不要编写或讨论 Prompt。" : systemPrompt || "识别现场考察媒体并推荐结构化标签。";
+  const catalog = Array.isArray(candidateTags) ? candidateTags.slice(0, 300).map(tag => ({ facet: String(tag.facet || ""), name: String(tag.name || ""), relatedSegments: Array.isArray(tag.relatedSegments) ? tag.relatedSegments : [] })).filter(tag => tag.name && tag.name !== "不确定") : [];
+  const catalogInstruction = catalog.length ? `\n\n当前候选标签库如下：\n${JSON.stringify(catalog)}\n优先从候选库中按准确名称匹配。先判断工段，再利用 relatedSegments 缩小设备候选；关系只是推理线索，必须结合视觉、语音等证据。如果没有合适候选，可以按 System Prompt 输出新标签建议。` : "";
   const formatInstruction = `\n\n严格遵守 System Prompt 中的 JSON Schema。只有“工段”和“设备”是正式 Facet；其他信息只能进入 context，禁止创建其他 Facet。每个 tag 只能表达一个概念，禁止输出跨 Facet 路径。只返回合法 JSON。`;
-  const content: Array<Record<string, unknown>> = [{ type: "text", text: `${effectivePrompt}${importedContext}${mediaContext}${transcriptContext}${formatInstruction}` }];
+  const content: Array<Record<string, unknown>> = [{ type: "text", text: `${effectivePrompt}${catalogInstruction}${importedContext}${mediaContext}${transcriptContext}${formatInstruction}` }];
   if (mediaKind === "image") content.push({ type: "image_url", image_url: { url: media } });
   if (mediaKind === "video") content.push({ type: "video_url", video_url: { url: media } });
   const response = await fetch(endpoint, {

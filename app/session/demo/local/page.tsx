@@ -87,13 +87,19 @@ export default function LocalRecognitionPage() {
   }, [assignments]);
   const visibleFiles = tagFilters.size ? files.filter(file => { const tokens = new Set((assignments[fileKey(file)] || []).map(tagToken)); return Array.from(tagFilters).every(token => tokens.has(token)); }) : files;
   const currentSegments = current ? (assignments[fileKey(current)] || []).filter(tag => tag.facet === "工段").map(tag => tag.name) : [];
-  const filteredCandidateTags = candidateTags.filter(tag => tag.facet !== "设备" || !currentSegments.length || tag.name === "不确定" || tag.reason === "人工候选" || tag.relatedSegments?.some(segment => currentSegments.includes(segment)));
+  const currentSegmentKey = currentSegments.slice().sort().join("\u0000");
+  const filteredCandidateTags = useMemo(() => { const segments = currentSegmentKey ? currentSegmentKey.split("\u0000") : []; return candidateTags.filter(tag => tag.facet !== "设备" || !segments.length || tag.name === "不确定" || tag.reason === "人工候选" || tag.relatedSegments?.some(segment => segments.includes(segment))); }, [candidateTags, currentSegmentKey]);
   const keyboardGroups = useMemo(() => groupTagValues(mergeTags(filteredCandidateTags, result?.tags || [])), [filteredCandidateTags, result]);
   const activeKeyboardFacet = keyboardGroups[activeFacetIndex % Math.max(1, keyboardGroups.length)]?.facet;
 
   useEffect(() => { const version = localStorage.getItem("vita-system-prompt-version"); const saved = localStorage.getItem("vita-system-prompt"); if (version === "3" && saved) setPrompt(saved); else { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); localStorage.setItem("vita-system-prompt-version", "3"); } }, []);
   useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => { if (!candidateGenerationStartedRef.current) setCandidateTags(ensureUncertain(cleanCandidateTags(body.tags || []))); }).finally(() => setCatalogLoaded(true)); }, []);
   useEffect(() => { if (!catalogLoaded) return; const timer = window.setTimeout(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_catalog", tags: candidateTags }) }).catch(() => undefined); }, 400); return () => window.clearTimeout(timer); }, [candidateTags, catalogLoaded]);
+  useEffect(() => {
+    if (!result) return; const choices: Record<string, number> = {};
+    for (const group of groupTagValues(filteredCandidateTags)) { const recommendations = result.tags.filter(tag => tag.facet === group.facet).sort((a, b) => (b.confidence || 0) - (a.confidence || 0)); const match = recommendations.find(tag => group.tags.some(candidate => candidate.name === tag.name)); choices[group.facet] = Math.max(0, match ? group.tags.findIndex(candidate => candidate.name === match.name) : 0); }
+    setFacetChoice(choices);
+  }, [current, result, filteredCandidateTags]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null; if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
@@ -136,9 +142,9 @@ export default function LocalRecognitionPage() {
     const start = Math.max(0, files.indexOf(current)); const windowFiles = files.slice(start, start + 21).filter(file => file.type.startsWith("image/") && !recommendationCache[fileKey(file)] && !prefetchingRef.current.has(fileKey(file)));
     if (!windowFiles.length) return; setPrefetchProgress(progress => ({ done: progress.done, total: progress.total + windowFiles.length }));
     windowFiles.forEach(file => prefetchingRef.current.add(fileKey(file)));
-    let cursor = 0; const worker = async () => { while (cursor < windowFiles.length) { const file = windowFiles[cursor++]; try { const dataUrl = await optimizedImageDataUrl(file); const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext: voiceByAsset[fileKey(file)] || "", sourceContext: sourceFolders(file) }) }); const body = await response.json(); if (response.ok && body.result) { setRecommendationCache(old => ({ ...old, [fileKey(file)]: body.result })); if (file === current) { setResult(body.result); setSelectedTags(new Set()); } } } catch { /* a failed item can be recognized on demand */ } finally { prefetchingRef.current.delete(fileKey(file)); setPrefetchProgress(progress => ({ ...progress, done: progress.done + 1 })); } } };
+    let cursor = 0; const worker = async () => { while (cursor < windowFiles.length) { const file = windowFiles[cursor++]; try { const dataUrl = await optimizedImageDataUrl(file); const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, candidateTags, voiceContext: voiceByAsset[fileKey(file)] || "", sourceContext: sourceFolders(file) }) }); const body = await response.json(); if (response.ok && body.result) { setRecommendationCache(old => ({ ...old, [fileKey(file)]: body.result })); if (file === current) { setResult(body.result); setSelectedTags(new Set()); } } } catch { /* a failed item can be recognized on demand */ } finally { prefetchingRef.current.delete(fileKey(file)); setPrefetchProgress(progress => ({ ...progress, done: progress.done + 1 })); } } };
     void Promise.all([worker(), worker()]);
-  }, [workflowStep, current, files, prompt, recommendationCache, voiceByAsset]);
+  }, [workflowStep, current, files, prompt, candidateTags, recommendationCache, voiceByAsset]);
 
   const chooseFolder = (e: ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files || []).filter(f => f.type.startsWith("image/") || f.type.startsWith("video/"));
@@ -163,7 +169,7 @@ export default function LocalRecognitionPage() {
     setLoading(true); setError(""); setResult(null); localStorage.setItem("vita-system-prompt", prompt);
     try {
       const dataUrl = includeMedia && current ? current.type.startsWith("image/") ? await optimizedImageDataUrl(current) : await fileDataUrl(current) : undefined;
-      const requestBody = JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: current ? sourceFolders(current) : [] });
+      const requestBody = JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, candidateTags, voiceContext, sourceContext: current ? sourceFolders(current) : [] });
       let response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: requestBody });
       let responseText = await response.text();
       if (response.status === 502 && responseText.trimStart().startsWith("<!DOCTYPE")) {
