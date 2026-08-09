@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string };
 type AssetState = { hash: string; filename: string; size: number; mimeType: string; lastModified: number; tags: Tag[]; updatedAt: string };
-type Store = { version: 1; assets: Record<string, AssetState> };
+type Store = { version: 1; assets: Record<string, AssetState>; tagCatalog?: Tag[] };
 const dataDir = process.env.FIELDNOTE_DATA_DIR || "/data/fieldnote-prototype";
 const storePath = path.join(dataDir, "local-asset-state.json");
 let writeQueue = Promise.resolve();
@@ -22,6 +22,19 @@ export async function POST(request: NextRequest) {
     const store = await loadStore();
     const states = (body.hashes || []).filter(validHash).flatMap(hash => store.assets[hash] ? [store.assets[hash]] : []);
     return NextResponse.json({ assets: states });
+  }
+  if (body.action === "get_catalog") {
+    const store = await loadStore();
+    return NextResponse.json({ tags: store.tagCatalog || [] });
+  }
+  if (body.action === "save_catalog") {
+    const tags = sanitizeTags((body as { tags?: Tag[] }).tags);
+    writeQueue = writeQueue.then(async () => {
+      const store = await loadStore(); store.tagCatalog = tags;
+      await mkdir(dataDir, { recursive: true }); const temp = `${storePath}.${process.pid}.tmp`;
+      await writeFile(temp, JSON.stringify(store, null, 2), { mode: 0o600 }); await rename(temp, storePath);
+    });
+    await writeQueue; return NextResponse.json({ saved: tags.length });
   }
   if (body.action === "upsert") {
     const incoming = (body.assets || []).filter(asset => validHash(asset.hash)).slice(0, 5000);

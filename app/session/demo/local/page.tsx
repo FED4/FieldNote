@@ -24,6 +24,9 @@ export default function LocalRecognitionPage() {
   const [manualFacet, setManualFacet] = useState("设备");
   const [manualName, setManualName] = useState("");
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
+  const [candidateTags, setCandidateTags] = useState<Tag[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [candidateLoading, setCandidateLoading] = useState(false);
   const [hashByKey, setHashByKey] = useState<Record<string, string>>({});
   const [hashProgress, setHashProgress] = useState(0);
   const [hydrated, setHydrated] = useState(false);
@@ -44,6 +47,8 @@ export default function LocalRecognitionPage() {
   const visibleFiles = tagFilters.size ? files.filter(file => { const tokens = new Set((assignments[fileKey(file)] || []).map(tagToken)); return Array.from(tagFilters).every(token => tokens.has(token)); }) : files;
 
   useEffect(() => { const saved = localStorage.getItem("vita-system-prompt"); if (saved) setPrompt(saved); }, []);
+  useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => setCandidateTags(body.tags || [])).finally(() => setCatalogLoaded(true)); }, []);
+  useEffect(() => { if (!catalogLoaded) return; const timer = window.setTimeout(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_catalog", tags: candidateTags }) }).catch(() => undefined); }, 400); return () => window.clearTimeout(timer); }, [candidateTags, catalogLoaded]);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
   useEffect(() => {
     if (!hydrated || !files.length) return;
@@ -139,6 +144,15 @@ export default function LocalRecognitionPage() {
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `FieldNote_文件名-标签_${new Date().toISOString().slice(0, 10)}.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  const generateCandidates = async () => {
+    setCandidateLoading(true); setError("");
+    try { const response = await fetch("/api/vita/candidates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemPrompt: prompt }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "生成失败"); setCandidateTags(old => mergeTags(old, body.candidates || [])); }
+    catch (e) { setError(e instanceof Error ? e.message : "候选标签生成失败"); } finally { setCandidateLoading(false); }
+  };
+  const useCandidate = (tag: Tag) => {
+    setResult(old => { const tags = old?.tags || []; const existing = tags.findIndex(item => item.facet === tag.facet && item.name === tag.name); if (existing >= 0) { setSelectedTags(selected => new Set(selected).add(existing)); return old; } const index = tags.length; setSelectedTags(selected => new Set(selected).add(index)); return { summary: old?.summary || "人工选择候选标签", tags: [...tags, { ...tag, confidence: 1, reason: "从候选标签库人工选择" }] }; });
+  };
+  const removeRecommended = (index: number) => { setResult(old => old ? { ...old, tags: old.tags.filter((_, i) => i !== index) } : old); setSelectedTags(old => new Set(Array.from(old).filter(i => i !== index).map(i => i > index ? i - 1 : i))); };
 
   return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
     <header style={{ maxWidth: 1180, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}>
@@ -172,8 +186,10 @@ export default function LocalRecognitionPage() {
       <section style={card}>
         <h3 style={heading}>第三步：点击确认推荐标签</h3>
         {!result && <p style={hint}>识别完成后，这里会显示画面摘要、Facet、标签、置信度和视觉依据。</p>}
-        {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet} <span style={{ color: "#adb4af" }}>· 类型</span></div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`层级：${tagLabel(tag)}\n${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n双击可修改标签`} onClick={() => setSelectedTags(old => toggleSet(old, index))} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tagLabel(tag)}</button>)}</div></div>)}</div></>}
-        <h3 style={{ ...heading, marginTop: 14 }}>手工标签</h3><div style={{ display: "grid", gridTemplateColumns: "90px 1fr 42px", gap: 5 }}><input value={manualFacet} onChange={e => setManualFacet(e.target.value)} placeholder="Facet" style={tagInput} /><input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="标签名称" style={tagInput} /><button style={smallButton} onClick={() => { if (!manualName.trim()) return; setResult(old => ({ summary: old?.summary || "手工标签", tags: [...(old?.tags || []), { facet: manualFacet.trim() || "其他", name: manualName.trim(), confidence: 1, reason: "人工添加" }] })); setSelectedTags(old => new Set(old).add(result?.tags.length || 0)); setManualName(""); }}>新增</button></div>
+        {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet} <span style={{ color: "#adb4af" }}>· AI 推荐</span></div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n双击可修改标签`} onClick={() => setSelectedTags(old => toggleSet(old, index))} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tag.name}<span title="删除这项推荐" onClick={event => { event.stopPropagation(); removeRecommended(index); }} style={{ marginLeft: 7, color: "#a16c6c", fontWeight: 400 }}>×</span></button>)}</div></div>)}</div></>}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}><h3 style={heading}>候选标签库</h3><button disabled={candidateLoading} onClick={() => void generateCandidates()} style={smallButton}>{candidateLoading ? "生成中…" : "从 System Prompt 生成"}</button></div>
+        {candidateTags.length === 0 ? <p style={hint}>先从 System Prompt 生成，或在下方手工新增。</p> : groupTagValues(candidateTags).map(group => <div key={group.facet} style={{ marginBottom: 9 }}><div style={{ color: "#7d8881", fontSize: 9, marginBottom: 4 }}>{group.facet}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>{group.tags.map(tag => <button key={tagToken(tag)} title="点击加入本次标签；右侧 × 从候选库删除" onClick={() => useCandidate(tag)} style={capsule}>{tag.name}<span onClick={event => { event.stopPropagation(); setCandidateTags(old => old.filter(item => tagToken(item) !== tagToken(tag))); }} style={{ marginLeft: 7, color: "#a16c6c" }}>×</span></button>)}</div></div>)}
+        <h3 style={{ ...heading, marginTop: 14 }}>新增候选标签</h3><div style={{ display: "grid", gridTemplateColumns: "90px 1fr 58px", gap: 5 }}><input value={manualFacet} onChange={e => setManualFacet(e.target.value)} placeholder="类型" style={tagInput} /><input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="标签名称" style={tagInput} /><button style={smallButton} onClick={() => { if (!manualName.trim()) return; setCandidateTags(old => mergeTags(old, [{ facet: manualFacet.trim() || "其他", name: manualName.trim(), confidence: 1, reason: "人工候选" }])); setManualName(""); }}>加入候选</button></div>
         <button disabled={!result || !selectedTags.size || !(selectedFiles.size || current)} onClick={() => { const targets = selectedFiles.size ? selectedFiles : new Set(current ? [fileKey(current)] : []); const tags = (result?.tags || []).filter((_, i) => selectedTags.has(i)); setAssignments(old => { const next = { ...old }; targets.forEach(key => { const existing = next[key] || []; next[key] = [...existing, ...tags.filter(t => !existing.some(x => x.facet === t.facet && x.name === t.name))]; }); return next; }); }} style={{ ...folderButton, border: 0, width: "100%", marginTop: 14, opacity: !result || !selectedTags.size ? .5 : 1 }}>＋ 添加 {selectedTags.size} 个标签到 {selectedFiles.size || (current ? 1 : 0)} 个素材</button>
       </section>
     </div>
@@ -198,6 +214,7 @@ function sourceFolders(file: File) { const parts = fileKey(file).split("/"); ret
 function importedFolderTags(file: File): Tag[] { const folders = sourceFolders(file); return folders.map((name, index) => ({ facet: "原始目录", path: folders.slice(0, index), name, confidence: 0.5, reason: "来自导入文件夹层级；仅作为初步分类参考，尚未确认" })); }
 function tagLabel(tag: Tag) { return [...(tag.path || []), tag.name].filter(Boolean).join(" › "); }
 function tagToken(tag: Tag) { return `${tag.facet}\u0000${tagLabel(tag)}`; }
+function mergeTags(current: Tag[], incoming: Tag[]) { const merged = new Map(current.map(tag => [tagToken(tag), tag])); incoming.forEach(tag => merged.set(tagToken(tag), tag)); return Array.from(merged.values()); }
 function groupTagValues(tags: Tag[]) { const groups = new Map<string, Tag[]>(); tags.forEach(tag => groups.set(tag.facet || "其他", [...(groups.get(tag.facet || "其他") || []), tag])); return Array.from(groups, ([facet, values]) => ({ facet, tags: values.sort((a, b) => tagLabel(a).localeCompare(tagLabel(b), "zh-CN")) })); }
 async function sha256(file: File) { const bytes = await file.arrayBuffer(); const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join(""); }
 function fileDataUrl(file: Blob) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); }); }
