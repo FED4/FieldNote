@@ -17,8 +17,10 @@ export async function POST(request: NextRequest) {
   const transcriptContext = voiceContext?.trim() ? `\n\n最近的会议语音转写如下：\n---\n${voiceContext.trim().slice(0, 12000)}\n---\n请结合图片与语音；语音中无法被图片证实的信息可以保留，但要在 reason 中明确来源。` : "\n\n当前没有语音转写，只根据图片判断。";
   const importedContext = sourceContext?.length ? `\n\n该素材来自以下历史目录层级：${sourceContext.map(value => `[${String(value).slice(0, 300)}]`).join(" → ")}。这些名称是 Codex 的初步分类，可能不准确，只能作为弱提示。请结合图片与语音独立判断；不要仅因目录名出现就照抄或给出高置信度，并在 reason 中说明是否参考了目录。` : "";
   const mediaContext = mediaKind ? `\n\n本次提供了${mediaKind === "video" ? "视频" : "图片"}，可以引用其中实际可见的视觉证据。` : "\n\n本次没有提供任何图片或视频。禁止声称看到了画面、设备、压力表或其他视觉信息；所有 reason 只能引用语音和原始目录，并应对无法验证的信息降低置信度。";
-  const formatInstruction = `\n\n请只返回合法 JSON，不要使用 Markdown、工具标记或注释：{"summary":"结合媒体与讨论的简述","tags":[{"facet":"厂房|工段|地点|设备|部件|活动|工艺|状态|对象|问题|材料|文档类型|人员|其他","path":["可选父级","可选子级"],"name":"叶子标签名称","confidence":0.0,"reason":"说明依据来自图片、视频、语音、原始目录或组合"}]}`;
-  const content: Array<Record<string, unknown>> = [{ type: "text", text: `${systemPrompt || "识别现场考察媒体并推荐结构化标签。"}${importedContext}${mediaContext}${transcriptContext}${formatInstruction}` }];
+  const promptIsMeta = systemPrompt?.includes("标签策略设计助手") || systemPrompt?.includes("帮助我编写一份高质量的 System Prompt");
+  const effectivePrompt = promptIsMeta ? "你是现场考察媒体标签助手。直接分析输入并推荐可检索的独立标签，不要编写或讨论 Prompt。" : systemPrompt || "识别现场考察媒体并推荐结构化标签。";
+  const formatInstruction = `\n\n标签拆分硬规则：每个 tag 只能表达一个概念并且只属于一个 Facet；禁止在一个 tag 中使用父子路径，禁止输出 path，禁止用“/”“›”“-”把不同概念合并。厂房、工段、地点、设备、部件必须拆成不同 tag。例如“动力车间的锅炉房”必须输出两个对象：{"facet":"工段","name":"动力车间"} 和 {"facet":"设备","name":"锅炉房"}，不能输出“动力车间 › 锅炉房”。\n请只返回合法 JSON，不要使用 Markdown、工具标记或注释：{"summary":"结合媒体与讨论的简述","tags":[{"facet":"厂房|工段|地点|设备|部件|活动|工艺|状态|对象|问题|材料|文档类型|人员|其他","name":"单一概念标签名称","confidence":0.0,"reason":"说明依据来自图片、视频、语音、原始目录或组合"}]}`;
+  const content: Array<Record<string, unknown>> = [{ type: "text", text: `${effectivePrompt}${importedContext}${mediaContext}${transcriptContext}${formatInstruction}` }];
   if (mediaKind === "image") content.push({ type: "image_url", image_url: { url: media } });
   if (mediaKind === "video") content.push({ type: "video_url", video_url: { url: media } });
   const response = await fetch(endpoint, {

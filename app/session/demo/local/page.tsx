@@ -6,7 +6,11 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string };
 type VitaResult = { summary: string; tags: Tag[] };
 
-const defaultPrompt = "你是现场考察媒体整理助手。分析图片中的地点、设备、对象、活动、状态、问题和材料。标签应简短、客观，无法从画面确认时不要猜测。优先输出对工程考察和后续检索有价值的标签。";
+const defaultPrompt = `你是现场考察媒体标签助手。直接分析当前图片或视频、当前素材语音和原始目录弱提示，输出用于工程资料检索的标签。
+
+严格区分厂房、工段、地点、设备、部件、活动、工艺、状态、问题和材料。每个标签只能表达一个概念并只属于一个 Facet，不得把不同概念拼成一个标签，不得输出跨 Facet 的父子路径。
+
+例如“动力车间的锅炉房”应拆成“工段/动力车间”和“设备/锅炉房”两个独立标签，不能生成“动力车间 › 锅炉房”。原始目录可能不准确，只能作为弱提示。没有充分证据时降低置信度或不推荐，不要猜测。`;
 
 export default function LocalRecognitionPage() {
   const [files, setFiles] = useState<File[]>([]);
@@ -32,6 +36,7 @@ export default function LocalRecognitionPage() {
   const [error, setError] = useState("");
   const preview = useMemo(() => current ? URL.createObjectURL(current) : "", [current]);
   const voiceContext = current ? voiceByAsset[fileKey(current)] || "" : "";
+  const isMetaPrompt = prompt.includes("标签策略设计助手") || prompt.includes("帮助我编写一份高质量的 System Prompt");
   const filterGroups = useMemo(() => {
     const unique = new Map<string, Tag>(); Object.values(assignments).flat().forEach(tag => unique.set(tagToken(tag), tag));
     return groupTagValues(Array.from(unique.values()));
@@ -154,8 +159,9 @@ export default function LocalRecognitionPage() {
         <div style={{ height: 420, background: "#202421", display: "grid", placeItems: "center", borderRadius: 8, overflow: "hidden" }}>{preview && current?.type.startsWith("video/") ? <video src={preview} controls style={{ maxWidth: "100%", maxHeight: "100%" }} /> : preview ? <img src={preview} alt="本地预览" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ color: "#9ba39e" }}>请先选择文件夹</span>}</div>
         <p style={{ fontSize: 10, color: "#87918b" }}>{current ? `${current.type || "媒体"} · ${(current.size / 1024 / 1024).toFixed(1)} MB · ${hashByKey[fileKey(current)]?.slice(0, 12) || "计算哈希中"}` : "未选择媒体"}</p>
         {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title={`类型：${tag.facet}；点击移除`} key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tagLabel(tag)} ×</button>)}</div>}
-        <h3 style={heading}>System Prompt</h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}><h3 style={heading}>System Prompt</h3><button onClick={() => { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); }} style={{ ...smallButton, marginBottom: 8 }}>恢复标签识别默认指令</button></div>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)} style={{ width: "100%", minHeight: 120, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
+        {isMetaPrompt && <div style={{ marginTop: 6, padding: 8, borderRadius: 6, background: "#fff4dd", color: "#8a641d", fontSize: 10, lineHeight: 1.6 }}>当前内容是用来“生成 Prompt”的 Meta Prompt，不适合直接识别媒体。请点击“恢复标签识别默认指令”。</div>}
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}><button onClick={() => void toggleMicrophone("overwrite", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "停止并覆写系统指令" : "语音覆写系统指令"}</button><button onClick={() => void toggleMicrophone("append", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "append" ? "停止并追加系统指令" : "语音追加系统指令"}</button></div>
         <h3 style={{ ...heading, marginTop: 14 }}>Voice Context · 会议语音</h3>
         <textarea value={voiceContext} onChange={e => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: e.target.value })); }} placeholder="仅对当前图片有效，例如：这是二号流槽改造后的第一次试机……" style={{ width: "100%", minHeight: 105, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
