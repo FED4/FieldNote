@@ -60,12 +60,13 @@ export default function LocalRecognitionPage() {
     } catch { setError("云端标签状态读取失败，本次仍可继续整理"); }
     finally { setHydrated(true); }
   };
-  const recognize = async () => {
-    if (!current) return;
+  const recognize = async (includeMedia = true) => {
+    if (includeMedia && !current) return;
+    if (!includeMedia && !voiceContext.trim()) { setError("请先输入、录制或导入当前素材语音"); return; }
     setLoading(true); setError(""); setResult(null); localStorage.setItem("vita-system-prompt", prompt);
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(current); });
-      const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: sourceFolders(current) }) });
+      const dataUrl = includeMedia && current ? await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(current); }) : undefined;
+      const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: current ? sourceFolders(current) : [] }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "识别失败");
       setResult(body.result); setSelectedTags(defaultTagIndexes(body.result.tags || []));
@@ -148,7 +149,7 @@ export default function LocalRecognitionPage() {
         <h3 style={{ ...heading, marginTop: 14 }}>Voice Context · 会议语音</h3>
         <textarea value={voiceContext} onChange={e => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: e.target.value })); }} placeholder="仅对当前图片有效，例如：这是二号流槽改造后的第一次试机……" style={{ width: "100%", minHeight: 105, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#89938d", fontSize: 9, margin: "5px 0 10px", flexWrap: "wrap" }}><span style={{ flex: "1 0 100%" }}>{voiceContext.length} 字 · 仅用于当前素材 · {asrLoading ? "腾讯云识别中…" : recordingMode || systemCapture ? "录音中，再次点击停止" : "等待输入"}</span><button onClick={() => void toggleMicrophone("overwrite", "voice")} style={{ ...smallButton, color: microphoneRef.current?.target === "voice" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "voice" && recordingMode === "overwrite" ? "停止并覆写当前语音" : "语音覆写当前素材"}</button><button onClick={() => void toggleMicrophone("append", "voice")} style={{ ...smallButton, color: microphoneRef.current?.target === "voice" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "voice" && recordingMode === "append" ? "停止并追加当前语音" : "语音追加当前素材"}</button><button onClick={() => void toggleSystemAudio()} style={{ ...smallButton, color: systemCapture ? "#b23838" : "#356b52" }}>{systemCapture ? "停止捕获系统声音" : "捕获系统声音"}</button><label style={{ ...smallButton, cursor: asrLoading ? "wait" : "pointer", opacity: asrLoading ? .55 : 1 }}>导入语音文件<input disabled={asrLoading} type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm" style={{ display: "none" }} onChange={e => { const file = e.target.files?.[0]; if (file) void transcribeAudio(file, "append", "voice", current ? fileKey(current) : ""); e.target.value = ""; }} /></label><button onClick={() => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: "" })); }} style={{ border: 0, background: "none", color: "#557263", fontSize: 9 }}>清空</button></div>
-        <button onClick={recognize} disabled={!current?.type.startsWith("image/") || loading} style={{ ...folderButton, border: 0, width: "100%", opacity: !current?.type.startsWith("image/") || loading ? .5 : 1 }}>{loading ? "VITA 正在识别…" : current?.type.startsWith("video/") ? "视频识别将在下一阶段接入" : "结合图片 + 语音推荐标签"}</button>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}><button onClick={() => void recognize(true)} disabled={!current || loading} style={{ ...folderButton, border: 0, width: "100%", opacity: !current || loading ? .5 : 1 }}>{loading ? "VITA 识别中…" : current?.type.startsWith("video/") ? "识别视频 + 语音" : "识别图片 + 语音"}</button><button onClick={() => void recognize(false)} disabled={!voiceContext.trim() || loading} style={{ ...folderButton, background: "#fff", color: "#287b57", border: "1px solid #78ad91", width: "100%", opacity: !voiceContext.trim() || loading ? .5 : 1 }}>仅根据语音推荐</button></div>
         {error && <p style={{ color: "#b34242", fontSize: 12 }}>{error}</p>}
       </section>
       <section style={card}>
