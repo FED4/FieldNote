@@ -1,0 +1,14 @@
+[Unit]
+Description=FieldNote temporary HTTPS tunnel
+After=network-online.target media-collab-prototype.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:5678
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

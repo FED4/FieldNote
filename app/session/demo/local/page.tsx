@@ -12,7 +12,7 @@ export default function LocalRecognitionPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [current, setCurrent] = useState<File | null>(null);
   const [prompt, setPrompt] = useState(defaultPrompt);
-  const [voiceContext, setVoiceContext] = useState("");
+  const [voiceByAsset, setVoiceByAsset] = useState<Record<string, string>>({});
   const [result, setResult] = useState<VitaResult | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [selectedTags, setSelectedTags] = useState<Set<number>>(new Set());
@@ -24,14 +24,15 @@ export default function LocalRecognitionPage() {
   const [hydrated, setHydrated] = useState(false);
   const [asrLoading, setAsrLoading] = useState(false);
   const [recordingMode, setRecordingMode] = useState<"overwrite" | "append" | null>(null);
-  const microphoneRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; mode: "overwrite" | "append" } | null>(null);
+  const microphoneRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; mode: "overwrite" | "append"; targetKey: string; target: "voice" | "system" } | null>(null);
   const [systemCapture, setSystemCapture] = useState(false);
-  const systemRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; chunks: Blob[] } | null>(null);
+  const systemRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; targetKey: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const preview = useMemo(() => current ? URL.createObjectURL(current) : "", [current]);
+  const voiceContext = current ? voiceByAsset[fileKey(current)] || "" : "";
 
-  useEffect(() => { const saved = localStorage.getItem("vita-system-prompt"); if (saved) setPrompt(saved); const voice = localStorage.getItem("vita-voice-context"); if (voice) setVoiceContext(voice); }, []);
+  useEffect(() => { const saved = localStorage.getItem("vita-system-prompt"); if (saved) setPrompt(saved); }, []);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
   useEffect(() => {
     if (!hydrated || !files.length) return;
@@ -61,7 +62,7 @@ export default function LocalRecognitionPage() {
   };
   const recognize = async () => {
     if (!current) return;
-    setLoading(true); setError(""); setResult(null); localStorage.setItem("vita-system-prompt", prompt); localStorage.setItem("vita-voice-context", voiceContext);
+    setLoading(true); setError(""); setResult(null); localStorage.setItem("vita-system-prompt", prompt);
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(current); });
       const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: sourceFolders(current) }) });
@@ -71,17 +72,18 @@ export default function LocalRecognitionPage() {
     } catch (e) { setError(e instanceof Error ? e.message : "识别失败"); }
     finally { setLoading(false); }
   };
-  const transcribeAudio = async (audio: Blob, mode: "overwrite" | "append" = "append") => {
+  const transcribeAudio = async (audio: Blob, mode: "overwrite" | "append" = "append", target: "voice" | "system" = "voice", targetKey = current ? fileKey(current) : "") => {
     setAsrLoading(true); setError("");
     try {
       const form = new FormData(); form.append("audio", audio, audio instanceof File ? audio.name : "recording.webm");
       const response = await fetch("/api/asr/transcribe", { method: "POST", body: form }); const body = await response.json();
       if (!response.ok) throw new Error(body.error || "语音识别失败");
-      setVoiceContext(old => mode === "overwrite" ? body.transcript : [old.trim(), body.transcript].filter(Boolean).join("\n"));
+      if (target === "system") setPrompt(old => mode === "overwrite" ? body.transcript : [old.trim(), body.transcript].filter(Boolean).join("\n"));
+      else if (targetKey) setVoiceByAsset(old => ({ ...old, [targetKey]: mode === "overwrite" ? body.transcript : [old[targetKey]?.trim(), body.transcript].filter(Boolean).join("\n") }));
     } catch (e) { setError(e instanceof Error ? e.message : "语音识别失败"); }
     finally { setAsrLoading(false); }
   };
-  const toggleMicrophone = async (mode: "overwrite" | "append") => {
+  const toggleMicrophone = async (mode: "overwrite" | "append", target: "voice" | "system" = "voice") => {
     const active = microphoneRef.current;
     if (active) { active.recorder.stop(); return; }
     setError("");
@@ -91,8 +93,9 @@ export default function LocalRecognitionPage() {
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
       const recorder = new MediaRecorder(stream, { mimeType });
       recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-      recorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); microphoneRef.current = null; setRecordingMode(null); if (chunks.length) void transcribeAudio(new Blob(chunks, { type: mimeType }), mode); };
-      microphoneRef.current = { recorder, stream, chunks, mode }; recorder.start(); setRecordingMode(mode);
+      const targetKey = current ? fileKey(current) : "";
+      recorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); microphoneRef.current = null; setRecordingMode(null); if (chunks.length) void transcribeAudio(new Blob(chunks, { type: mimeType }), mode, target, targetKey); };
+      microphoneRef.current = { recorder, stream, chunks, mode, targetKey, target }; recorder.start(); setRecordingMode(mode);
     } catch (e) { setError(e instanceof Error ? e.message : "无法打开麦克风"); }
   };
   const toggleSystemAudio = async () => {
@@ -106,9 +109,10 @@ export default function LocalRecognitionPage() {
       const chunks: Blob[] = []; const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
       const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), { mimeType });
       recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-      recorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); systemRef.current = null; setSystemCapture(false); if (chunks.length) void transcribeAudio(new Blob(chunks, { type: mimeType }), "append"); };
+      const targetKey = current ? fileKey(current) : "";
+      recorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); systemRef.current = null; setSystemCapture(false); if (chunks.length) void transcribeAudio(new Blob(chunks, { type: mimeType }), "append", "voice", targetKey); };
       stream.getVideoTracks()[0]?.addEventListener("ended", () => recorder.state !== "inactive" && recorder.stop());
-      systemRef.current = { recorder, stream, chunks }; recorder.start(); setSystemCapture(true);
+      systemRef.current = { recorder, stream, chunks, targetKey }; recorder.start(); setSystemCapture(true);
     } catch (e) { setError(e instanceof Error ? e.message : "无法捕获系统声音"); }
   };
 
@@ -131,9 +135,10 @@ export default function LocalRecognitionPage() {
         {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title="点击移除" key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tag.name} ×</button>)}</div>}
         <h3 style={heading}>System Prompt</h3>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)} style={{ width: "100%", minHeight: 120, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
+        <div style={{ display: "flex", gap: 6, marginTop: 5 }}><button onClick={() => void toggleMicrophone("overwrite", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "■ 停止并覆写" : "🎙 覆写系统指令"}</button><button onClick={() => void toggleMicrophone("append", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "append" ? "■ 停止并追加" : "🎙＋追加系统指令"}</button></div>
         <h3 style={{ ...heading, marginTop: 14 }}>Voice Context · 会议语音</h3>
-        <textarea value={voiceContext} onChange={e => setVoiceContext(e.target.value)} placeholder="粘贴或输入最近的会议语音转写，例如：这是二号流槽改造后的第一次试机，重点看出口物料是否均匀……" style={{ width: "100%", minHeight: 105, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#89938d", fontSize: 9, margin: "5px 0 10px", flexWrap: "wrap" }}><span style={{ flex: "1 0 100%" }}>{voiceContext.length} 字 · {asrLoading ? "腾讯云识别中…" : recordingMode || systemCapture ? "录音中，再次点击停止" : "随图片用于标签推理"}</span><button onClick={() => void toggleMicrophone("overwrite")} style={{ ...smallButton, color: recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{recordingMode === "overwrite" ? "■ 停止并覆写" : "🎙 覆写"}</button><button onClick={() => void toggleMicrophone("append")} style={{ ...smallButton, color: recordingMode === "append" ? "#b23838" : "#356b52" }}>{recordingMode === "append" ? "■ 停止并追加" : "🎙＋追加"}</button><button onClick={() => void toggleSystemAudio()} style={{ ...smallButton, color: systemCapture ? "#b23838" : "#356b52" }}>{systemCapture ? "■ 停止系统声音" : "▣ 系统声音"}</button><label style={{ ...smallButton, cursor: asrLoading ? "wait" : "pointer", opacity: asrLoading ? .55 : 1 }}>＋ 导入语音<input disabled={asrLoading} type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm" style={{ display: "none" }} onChange={e => { const file = e.target.files?.[0]; if (file) void transcribeAudio(file, "append"); e.target.value = ""; }} /></label><button onClick={() => setVoiceContext("")} style={{ border: 0, background: "none", color: "#557263", fontSize: 9 }}>清空</button></div>
+        <textarea value={voiceContext} onChange={e => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: e.target.value })); }} placeholder="仅对当前图片有效，例如：这是二号流槽改造后的第一次试机……" style={{ width: "100%", minHeight: 105, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#89938d", fontSize: 9, margin: "5px 0 10px", flexWrap: "wrap" }}><span style={{ flex: "1 0 100%" }}>{voiceContext.length} 字 · 仅用于当前素材 · {asrLoading ? "腾讯云识别中…" : recordingMode || systemCapture ? "录音中，再次点击停止" : "等待输入"}</span><button onClick={() => void toggleMicrophone("overwrite", "voice")} style={{ ...smallButton, color: microphoneRef.current?.target === "voice" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "voice" && recordingMode === "overwrite" ? "■ 停止并覆写" : "🎙 覆写"}</button><button onClick={() => void toggleMicrophone("append", "voice")} style={{ ...smallButton, color: microphoneRef.current?.target === "voice" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "voice" && recordingMode === "append" ? "■ 停止并追加" : "🎙＋追加"}</button><button onClick={() => void toggleSystemAudio()} style={{ ...smallButton, color: systemCapture ? "#b23838" : "#356b52" }}>{systemCapture ? "■ 停止系统声音" : "▣ 系统声音"}</button><label style={{ ...smallButton, cursor: asrLoading ? "wait" : "pointer", opacity: asrLoading ? .55 : 1 }}>＋ 导入语音<input disabled={asrLoading} type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm" style={{ display: "none" }} onChange={e => { const file = e.target.files?.[0]; if (file) void transcribeAudio(file, "append", "voice", current ? fileKey(current) : ""); e.target.value = ""; }} /></label><button onClick={() => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: "" })); }} style={{ border: 0, background: "none", color: "#557263", fontSize: 9 }}>清空</button></div>
         <button onClick={recognize} disabled={!current?.type.startsWith("image/") || loading} style={{ ...folderButton, border: 0, width: "100%", opacity: !current?.type.startsWith("image/") || loading ? .5 : 1 }}>{loading ? "VITA 正在识别…" : current?.type.startsWith("video/") ? "视频识别将在下一阶段接入" : "结合图片 + 语音推荐标签"}</button>
         {error && <p style={{ color: "#b34242", fontSize: 12 }}>{error}</p>}
       </section>
