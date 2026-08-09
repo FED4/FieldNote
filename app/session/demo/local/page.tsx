@@ -54,6 +54,7 @@ export default function LocalRecognitionPage() {
   const [candidateTags, setCandidateTags] = useState<Tag[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [candidateLoading, setCandidateLoading] = useState(false);
+  const candidateGenerationStartedRef = useRef(false);
   const [activeFacetIndex, setActiveFacetIndex] = useState(0);
   const [facetChoice, setFacetChoice] = useState<Record<string, number>>({});
   const [hashByKey, setHashByKey] = useState<Record<string, string>>({});
@@ -78,7 +79,7 @@ export default function LocalRecognitionPage() {
   const activeKeyboardFacet = keyboardGroups[activeFacetIndex % Math.max(1, keyboardGroups.length)]?.facet;
 
   useEffect(() => { const version = localStorage.getItem("vita-system-prompt-version"); const saved = localStorage.getItem("vita-system-prompt"); if (version === "2" && saved) setPrompt(saved); else { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); localStorage.setItem("vita-system-prompt-version", "2"); } }, []);
-  useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => setCandidateTags(ensureUncertain(cleanCandidateTags(body.tags || [])))).finally(() => setCatalogLoaded(true)); }, []);
+  useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => { if (!candidateGenerationStartedRef.current) setCandidateTags(ensureUncertain(cleanCandidateTags(body.tags || []))); }).finally(() => setCatalogLoaded(true)); }, []);
   useEffect(() => { if (!catalogLoaded) return; const timer = window.setTimeout(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_catalog", tags: candidateTags }) }).catch(() => undefined); }, 400); return () => window.clearTimeout(timer); }, [candidateTags, catalogLoaded]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -223,7 +224,7 @@ export default function LocalRecognitionPage() {
 
   const beginTagging = async () => {
     if (!files.length) { setError("请先选择包含图片或视频的文件夹"); return; }
-    localStorage.setItem("vita-system-prompt", prompt); setRecommendationCache({}); setPrefetchProgress({ done: 0, total: 0 }); if (await generateCandidates()) setWorkflowStep("tagging");
+    candidateGenerationStartedRef.current = true; localStorage.setItem("vita-system-prompt", prompt); setRecommendationCache({}); setPrefetchProgress({ done: 0, total: 0 }); if (await generateCandidates()) setWorkflowStep("tagging");
   };
 
   if (workflowStep === "setup") return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
