@@ -65,10 +65,14 @@ export default function LocalRecognitionPage() {
     if (!includeMedia && !voiceContext.trim()) { setError("请先输入、录制或导入当前素材语音"); return; }
     setLoading(true); setError(""); setResult(null); localStorage.setItem("vita-system-prompt", prompt);
     try {
-      const dataUrl = includeMedia && current ? await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(current); }) : undefined;
+      const dataUrl = includeMedia && current ? current.type.startsWith("image/") ? await optimizedImageDataUrl(current) : await fileDataUrl(current) : undefined;
       const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: current ? sourceFolders(current) : [] }) });
-      const body = await response.json();
+      const responseText = await response.text();
+      let body: { error?: string; result?: VitaResult };
+      try { body = JSON.parse(responseText); }
+      catch { throw new Error(response.status === 413 ? "媒体文件过大，请使用压缩图片或“仅根据语音推荐”" : `识别服务返回了非 JSON 响应（HTTP ${response.status}）`); }
       if (!response.ok) throw new Error(body.error || "识别失败");
+      if (!body.result) throw new Error("识别结果为空");
       setResult(body.result); setSelectedTags(defaultTagIndexes(body.result.tags || []));
     } catch (e) { setError(e instanceof Error ? e.message : "识别失败"); }
     finally { setLoading(false); }
@@ -180,6 +184,16 @@ function csvCell(value: string) { return `"${value.replaceAll('"', '""')}"`; }
 function sourceFolders(file: File) { const parts = fileKey(file).split("/"); return parts.length > 1 ? parts.slice(1, -1) : []; }
 function importedFolderTags(file: File): Tag[] { return sourceFolders(file).map(name => ({ facet: "原始目录", name, confidence: 0.5, reason: "来自导入文件夹层级；仅作为初步分类参考，尚未确认" })); }
 async function sha256(file: File) { const bytes = await file.arrayBuffer(); const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join(""); }
+function fileDataUrl(file: Blob) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); }); }
+async function optimizedImageDataUrl(file: File) {
+  try {
+    const bitmap = await createImageBitmap(file); const max = 1600; const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas"); canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error("图片压缩失败")), "image/jpeg", .82));
+    return fileDataUrl(blob);
+  } catch { return fileDataUrl(file); }
+}
 function toggleSet<T>(old: Set<T>, value: T) { const next = new Set(old); next.has(value) ? next.delete(value) : next.add(value); return next; }
 function editResultTag(index: number, field: "facet" | "name", value: string, setResult: React.Dispatch<React.SetStateAction<VitaResult | null>>) { setResult(old => old ? { ...old, tags: old.tags.map((tag, i) => i === index ? { ...tag, [field]: value } : tag) } : old); }
 function removeAssigned(key: string, index: number, setAssignments: React.Dispatch<React.SetStateAction<Record<string, Tag[]>>>) { setAssignments(old => ({ ...old, [key]: (old[key] || []).filter((_, i) => i !== index) })); }
