@@ -115,21 +115,30 @@ export default function LocalRecognitionPage() {
       systemRef.current = { recorder, stream, chunks, targetKey }; recorder.start(); setSystemCapture(true);
     } catch (e) { setError(e instanceof Error ? e.message : "无法捕获系统声音"); }
   };
+  const exportTagCsv = () => {
+    if (!files.length) return;
+    const rows = [["文件名", "相对路径", "SHA256", "标签"]];
+    for (const file of files) rows.push([file.name, fileKey(file), hashByKey[fileKey(file)] || "", (assignments[fileKey(file)] || []).map(tag => `${tag.facet}/${tag.name}`).join("; ")]);
+    const csv = "\uFEFF" + rows.map(row => row.map(csvCell).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = `FieldNote_文件名-标签_${new Date().toISOString().slice(0, 10)}.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
     <header style={{ maxWidth: 1180, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}>
-      <Link href="/session/demo" style={{ color: "#287b57", textDecoration: "none" }}>← 返回工作台</Link><h2 style={{ margin: 0 }}>本地图片识别实验</h2><span style={{ color: "#849089", fontSize: 12 }}>本地文件不保存到服务器；识别图片会发送给腾讯云 VITA</span>
+      <Link href="/session/demo" style={{ color: "#287b57", textDecoration: "none" }}>← 返回工作台</Link><h2 style={{ margin: 0 }}>本地素材整理</h2><span style={{ color: "#849089", fontSize: 12, flex: 1 }}>原文件留在电脑，仅识别内容发送给腾讯云</span><button disabled={!files.length} onClick={exportTagCsv} style={{ ...folderButton, border: 0, opacity: files.length ? 1 : .45 }}>导出文件名-标签 CSV</button>
     </header>
+    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span></div>
     <div style={{ maxWidth: 1180, margin: "auto", display: "grid", gridTemplateColumns: "270px minmax(360px,1fr) 350px", gap: 14 }}>
       <section style={card}>
-        <h3 style={heading}>1. 关联本地文件夹</h3>
+        <h3 style={heading}>第一步：选择本地文件夹</h3>
         <label style={folderButton}>选择图片 / 视频文件夹<input type="file" accept="image/*,video/*" multiple {...({ webkitdirectory: "" } as object)} onChange={chooseFolder} style={{ display: "none" }} /></label>
         <p style={hint}>共 {files.length} 项，已选择 {selectedFiles.size} 项 · 哈希 {hashProgress}/{files.length}{hydrated ? " · 标签已同步" : ""}</p>
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}><button style={smallButton} onClick={() => setSelectedFiles(new Set(files.map(fileKey)))}>全选</button><button style={smallButton} onClick={() => setSelectedFiles(new Set())}>清除选择</button></div>
         <div style={{ maxHeight: 560, overflow: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>{files.map((f, i) => { const key = fileKey(f); return <div key={`${key}-${i}`} onClick={() => { setCurrent(f); setResult(null); }} style={{ position: "relative", border: current === f ? "2px solid #2c855d" : "2px solid transparent", borderRadius: 7, overflow: "hidden", background: "#edf0ed", cursor: "pointer" }}><Thumbnail file={f} /><input aria-label="选择素材" type="checkbox" checked={selectedFiles.has(key)} onClick={e => e.stopPropagation()} onChange={() => setSelectedFiles(old => toggleSet(old, key))} style={{ position: "absolute", top: 6, left: 6 }} /><div style={{ minHeight: 28, display: "flex", gap: 3, flexWrap: "wrap", padding: 4 }}>{(assignments[key] || []).slice(0, 3).map((tag, n) => <span key={n} style={{ ...tagChip, padding: "2px 4px" }}>{tag.name}</span>)}{(assignments[key] || []).length > 3 && <span style={{ fontSize: 8 }}>+{assignments[key].length - 3}</span>}</div></div> })}</div>
       </section>
       <section style={card}>
-        <h3 style={heading}>2. 当前图片</h3>
+        <h3 style={heading}>第二步：查看当前素材</h3>
         <div style={{ height: 420, background: "#202421", display: "grid", placeItems: "center", borderRadius: 8, overflow: "hidden" }}>{preview && current?.type.startsWith("video/") ? <video src={preview} controls style={{ maxWidth: "100%", maxHeight: "100%" }} /> : preview ? <img src={preview} alt="本地预览" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ color: "#9ba39e" }}>请先选择文件夹</span>}</div>
         <p style={{ fontSize: 10, color: "#87918b" }}>{current ? `${current.type || "媒体"} · ${(current.size / 1024 / 1024).toFixed(1)} MB · ${hashByKey[fileKey(current)]?.slice(0, 12) || "计算哈希中"}` : "未选择媒体"}</p>
         {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title="点击移除" key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tag.name} ×</button>)}</div>}
@@ -143,7 +152,7 @@ export default function LocalRecognitionPage() {
         {error && <p style={{ color: "#b34242", fontSize: 12 }}>{error}</p>}
       </section>
       <section style={card}>
-        <h3 style={heading}>3. 推荐结果</h3>
+        <h3 style={heading}>第三步：点击确认推荐标签</h3>
         {!result && <p style={hint}>识别完成后，这里会显示画面摘要、Facet、标签、置信度和视觉依据。</p>}
         {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n双击可修改标签`} onClick={() => setSelectedTags(old => toggleSet(old, index))} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tag.name}</button>)}</div></div>)}</div></>}
         <h3 style={{ ...heading, marginTop: 14 }}>手工标签</h3><div style={{ display: "grid", gridTemplateColumns: "90px 1fr 42px", gap: 5 }}><input value={manualFacet} onChange={e => setManualFacet(e.target.value)} placeholder="Facet" style={tagInput} /><input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="标签名称" style={tagInput} /><button style={smallButton} onClick={() => { if (!manualName.trim()) return; setResult(old => ({ summary: old?.summary || "手工标签", tags: [...(old?.tags || []), { facet: manualFacet.trim() || "其他", name: manualName.trim(), confidence: 1, reason: "人工添加" }] })); setSelectedTags(old => new Set(old).add(result?.tags.length || 0)); setManualName(""); }}>新增</button></div>
@@ -163,8 +172,10 @@ const tagInput: React.CSSProperties = { minWidth: 0, width: "100%", border: "1px
 const tagChip: React.CSSProperties = { border: "1px solid #cce4d5", background: "#edf7f1", color: "#287653", borderRadius: 5, padding: "5px 7px", fontSize: 9 };
 const capsule: React.CSSProperties = { border: "1px solid #d9e0dc", background: "#fff", color: "#536059", borderRadius: 16, padding: "6px 10px", fontSize: 10 };
 const selectedCapsule: React.CSSProperties = { borderColor: "#75b392", background: "#e9f5ed", color: "#24734e", fontWeight: 600 };
+const stepBadge: React.CSSProperties = { width: 20, height: 20, borderRadius: "50%", background: "#e8f4ec", color: "#287b57", display: "inline-grid", placeItems: "center", fontSize: 10 };
 
 function fileKey(file: File) { return file.webkitRelativePath || file.name; }
+function csvCell(value: string) { return `"${value.replaceAll('"', '""')}"`; }
 function sourceFolders(file: File) { const parts = fileKey(file).split("/"); return parts.length > 1 ? parts.slice(1, -1) : []; }
 function importedFolderTags(file: File): Tag[] { return sourceFolders(file).map(name => ({ facet: "原始目录", name, confidence: 0.5, reason: "来自导入文件夹层级；仅作为初步分类参考，尚未确认" })); }
 async function sha256(file: File) { const bytes = await file.arrayBuffer(); const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join(""); }
