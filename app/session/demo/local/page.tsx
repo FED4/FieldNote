@@ -87,11 +87,14 @@ export default function LocalRecognitionPage() {
       if ((event.key === "ArrowUp" || event.key === "ArrowDown") && visibleFiles.length) {
         event.preventDefault(); const index = Math.max(0, current ? visibleFiles.indexOf(current) : 0); const next = Math.max(0, Math.min(visibleFiles.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); setCurrent(visibleFiles[next]); setResult(null); return;
       }
-      if (event.key === "Enter" && keyboardGroups.length) { event.preventDefault(); setActiveFacetIndex(index => (index + 1) % keyboardGroups.length); return; }
+      if (event.key === "Enter" && keyboardGroups.length) {
+        event.preventDefault(); const group = keyboardGroups[activeFacetIndex % keyboardGroups.length]; if (!group?.tags.length) return;
+        const choice = facetChoice[group.facet] ?? 0; chooseFacetTag(group.tags[choice]); setActiveFacetIndex(index => (index + 1) % keyboardGroups.length); return;
+      }
       if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && keyboardGroups.length) {
         event.preventDefault(); const group = keyboardGroups[activeFacetIndex % keyboardGroups.length]; if (!group?.tags.length) return;
         const previous = facetChoice[group.facet] ?? -1; const direction = event.key === "ArrowRight" ? 1 : -1; const next = (previous + direction + group.tags.length) % group.tags.length;
-        setFacetChoice(old => ({ ...old, [group.facet]: next })); chooseFacetTag(group.tags[next]);
+        setFacetChoice(old => ({ ...old, [group.facet]: next }));
       }
     };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
@@ -246,7 +249,7 @@ export default function LocalRecognitionPage() {
     <header style={{ maxWidth: 1180, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}>
       <button onClick={() => setWorkflowStep("setup")} style={{ border: 0, background: "none", color: "#287b57" }}>← 修改导入设置</button><h2 style={{ margin: 0 }}>素材标记</h2><span style={{ color: "#849089", fontSize: 12, flex: 1 }}>标签自动同步 · 后台预识别 {prefetchProgress.done}/{prefetchProgress.total} · 云端 CSV 实时备份</span><a href="/api/local-assets" style={{ ...smallButton, textDecoration: "none" }}>下载云端备份</a><button disabled={!files.length} onClick={exportTagCsv} style={{ ...folderButton, border: 0, opacity: files.length ? 1 : .45 }}>导出当前 CSV</button>
     </header>
-    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span><span style={{ marginLeft: 14, color: "#88938c", fontSize: 9 }}>快捷键：↑↓ 素材 · ←→ 标签 · Enter 下一类型</span></div>
+    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span><span style={{ marginLeft: 14, color: "#88938c", fontSize: 9 }}>快捷键：↑↓ 素材 · ←→ 浏览标签 · Enter 确认并切到下一类型</span></div>
     <div style={{ maxWidth: 1180, margin: "auto", display: "grid", gridTemplateColumns: "270px minmax(360px,1fr) 350px", gap: 14 }}>
       <section style={card}>
         <h3 style={heading}>素材与标签筛选</h3>
