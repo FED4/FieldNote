@@ -101,11 +101,16 @@ export default function LocalRecognitionPage() {
     setLoading(true); setError(""); setResult(null); localStorage.setItem("vita-system-prompt", prompt);
     try {
       const dataUrl = includeMedia && current ? current.type.startsWith("image/") ? await optimizedImageDataUrl(current) : await fileDataUrl(current) : undefined;
-      const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: current ? sourceFolders(current) : [] }) });
-      const responseText = await response.text();
+      const requestBody = JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext, sourceContext: current ? sourceFolders(current) : [] });
+      let response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: requestBody });
+      let responseText = await response.text();
+      if (response.status === 502 && responseText.trimStart().startsWith("<!DOCTYPE")) {
+        await new Promise(resolve => window.setTimeout(resolve, 900));
+        response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: requestBody }); responseText = await response.text();
+      }
       let body: { error?: string; result?: VitaResult };
       try { body = JSON.parse(responseText); }
-      catch { throw new Error(response.status === 413 ? "媒体文件过大，请使用压缩图片或“仅根据语音推荐”" : `识别服务返回了非 JSON 响应（HTTP ${response.status}）`); }
+      catch { throw new Error(response.status === 413 ? "媒体文件过大，请使用压缩图片或“仅根据语音推荐”" : response.status === 502 ? "HTTPS 临时隧道连接失败，请稍后重试" : `识别服务返回异常响应（HTTP ${response.status}）`); }
       if (!response.ok) throw new Error(body.error || "识别失败");
       if (!body.result) throw new Error("识别结果为空");
       setResult(body.result); setSelectedTags(defaultTagIndexes(body.result.tags || []));
