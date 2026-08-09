@@ -57,6 +57,7 @@ export default function LocalRecognitionPage() {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [selectedTags, setSelectedTags] = useState<Set<number>>(new Set());
   const [assignments, setAssignments] = useState<Record<string, Tag[]>>({});
+  const [deletedFiles, setDeletedFiles] = useState<Set<string>>(new Set());
   const [manualFacet, setManualFacet] = useState("设备");
   const [manualName, setManualName] = useState("");
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
@@ -86,7 +87,7 @@ export default function LocalRecognitionPage() {
   }, [assignments]);
   const visibleFiles = tagFilters.size ? files.filter(file => { const tokens = new Set((assignments[fileKey(file)] || []).map(tagToken)); return Array.from(tagFilters).every(token => tokens.has(token)); }) : files;
   const currentSegments = current ? (assignments[fileKey(current)] || []).filter(tag => tag.facet === "工段").map(tag => tag.name) : [];
-  const filteredCandidateTags = candidateTags.filter(tag => tag.facet !== "设备" || !currentSegments.length || !tag.relatedSegments?.length || tag.relatedSegments.some(segment => currentSegments.includes(segment)));
+  const filteredCandidateTags = candidateTags.filter(tag => tag.facet !== "设备" || !currentSegments.length || tag.name === "不确定" || tag.reason === "人工候选" || tag.relatedSegments?.some(segment => currentSegments.includes(segment)));
   const keyboardGroups = useMemo(() => groupTagValues(mergeTags(filteredCandidateTags, result?.tags || [])), [filteredCandidateTags, result]);
   const activeKeyboardFacet = keyboardGroups[activeFacetIndex % Math.max(1, keyboardGroups.length)]?.facet;
 
@@ -96,6 +97,7 @@ export default function LocalRecognitionPage() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null; if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
+      if (event.key.toLowerCase() === "x" && current) { event.preventDefault(); toggleDeletion(fileKey(current)); return; }
       if ((event.key === "ArrowUp" || event.key === "ArrowDown") && visibleFiles.length) {
         event.preventDefault(); const index = Math.max(0, current ? visibleFiles.indexOf(current) : 0); const next = Math.max(0, Math.min(visibleFiles.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))); setCurrent(visibleFiles[next]); setResult(null); return;
       }
@@ -115,19 +117,19 @@ export default function LocalRecognitionPage() {
   useEffect(() => {
     const readyKeys = Array.from(dirtyAssetKeysRef.current).filter(key => hashByKey[key]); if (!readyKeys.length) return;
     const timer = window.setTimeout(() => {
-      const assets = readyKeys.flatMap(key => { const file = files.find(item => fileKey(item) === key); const hash = hashByKey[key]; return file && hash ? [{ hash, filename: file.name, relativePath: key, sourceContext: sourceFolders(file), size: file.size, mimeType: file.type, lastModified: file.lastModified, tags: (assignments[key] || []).filter(tag => tag.facet !== "原始目录") }] : []; });
+      const assets = readyKeys.flatMap(key => { const file = files.find(item => fileKey(item) === key); const hash = hashByKey[key]; return file && hash ? [{ hash, filename: file.name, relativePath: key, sourceContext: sourceFolders(file), size: file.size, mimeType: file.type, lastModified: file.lastModified, markedForDeletion: deletedFiles.has(key), tags: (assignments[key] || []).filter(tag => tag.facet !== "原始目录") }] : []; });
       if (!assets.length) return; fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "upsert", assets }) }).then(response => { if (response.ok) readyKeys.forEach(key => dirtyAssetKeysRef.current.delete(key)); }).catch(() => undefined);
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [assignments, files, hashByKey]);
+  }, [assignments, deletedFiles, files, hashByKey]);
   useEffect(() => {
     if (!hydrated || !files.length) return;
     const timer = window.setTimeout(() => {
-      const assets = files.flatMap(file => { const hash = hashByKey[fileKey(file)]; return hash ? [{ hash, filename: file.name, relativePath: fileKey(file), sourceContext: sourceFolders(file), size: file.size, mimeType: file.type, lastModified: file.lastModified, tags: (assignments[fileKey(file)] || []).filter(tag => tag.facet !== "原始目录") }] : []; });
+      const assets = files.flatMap(file => { const hash = hashByKey[fileKey(file)]; return hash ? [{ hash, filename: file.name, relativePath: fileKey(file), sourceContext: sourceFolders(file), size: file.size, mimeType: file.type, lastModified: file.lastModified, markedForDeletion: deletedFiles.has(fileKey(file)), tags: (assignments[fileKey(file)] || []).filter(tag => tag.facet !== "原始目录") }] : []; });
       fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "upsert", assets }) }).catch(() => undefined);
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [assignments, files, hashByKey, hydrated]);
+  }, [assignments, deletedFiles, files, hashByKey, hydrated]);
   useEffect(() => {
     if (workflowStep !== "tagging" || !current) return;
     const cached = recommendationCache[fileKey(current)]; if (cached) { setResult(cached); setSelectedTags(new Set()); }
@@ -140,7 +142,7 @@ export default function LocalRecognitionPage() {
 
   const chooseFolder = (e: ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files || []).filter(f => f.type.startsWith("image/") || f.type.startsWith("video/"));
-    setFiles(picked); setCurrent(picked[0] || null); setSelectedFiles(new Set(picked[0] ? [fileKey(picked[0])] : [])); setAssignments({}); setHashByKey({}); setHydrated(false); setHashProgress(0); setResult(null); setError("");
+    setFiles(picked); setCurrent(picked[0] || null); setSelectedFiles(new Set(picked[0] ? [fileKey(picked[0])] : [])); setAssignments({}); setDeletedFiles(new Set()); setHashByKey({}); setHydrated(false); setHashProgress(0); setResult(null); setError("");
     void hashAndRestore(picked);
   };
   const hashAndRestore = async (picked: File[]) => {
@@ -149,9 +151,9 @@ export default function LocalRecognitionPage() {
     setHashByKey(mapping);
     try {
       const response = await fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "resolve", hashes: Object.values(mapping) }) });
-      const body = await response.json(); const byHash = Object.fromEntries((body.assets || []).map((state: { hash: string; tags: Tag[] }) => [state.hash, state.tags]));
-      const restored: Record<string, Tag[]> = {}; for (const file of picked) restored[fileKey(file)] = (byHash[mapping[fileKey(file)]] || []).filter((tag: Tag) => tag.facet !== "原始目录").map((tag: Tag) => ({ ...tag, status: "confirmed" }));
-      setAssignments(restored);
+      const body = await response.json(); const byHash = Object.fromEntries((body.assets || []).map((state: { hash: string; tags: Tag[]; markedForDeletion?: boolean }) => [state.hash, state]));
+      const restored: Record<string, Tag[]> = {}; for (const file of picked) restored[fileKey(file)] = (byHash[mapping[fileKey(file)]]?.tags || []).filter((tag: Tag) => tag.facet !== "原始目录").map((tag: Tag) => ({ ...tag, status: "confirmed" }));
+      const restoredDeleted = new Set<string>(); for (const file of picked) if (byHash[mapping[fileKey(file)]]?.markedForDeletion) restoredDeleted.add(fileKey(file)); setAssignments(restored); setDeletedFiles(restoredDeleted);
     } catch { setError("云端标签状态读取失败，本次仍可继续整理"); }
     finally { setHydrated(true); }
   };
@@ -222,8 +224,8 @@ export default function LocalRecognitionPage() {
   };
   const exportTagCsv = () => {
     if (!files.length) return;
-    const rows = [["文件名", "相对路径", "SHA256", "已确认标签", "原始目录线索"]];
-    for (const file of files) rows.push([file.name, fileKey(file), hashByKey[fileKey(file)] || "", (assignments[fileKey(file)] || []).filter(tag => tag.status === "confirmed" || !tag.status).map(tag => `${tag.facet}/${tagLabel(tag)}`).join("; "), sourceFolders(file).join(" > ")]);
+    const rows = [["文件名", "相对路径", "SHA256", "待删除", "已确认标签", "原始目录线索"]];
+    for (const file of files) rows.push([file.name, fileKey(file), hashByKey[fileKey(file)] || "", deletedFiles.has(fileKey(file)) ? "是" : "", (assignments[fileKey(file)] || []).filter(tag => tag.status === "confirmed" || !tag.status).map(tag => `${tag.facet}/${tagLabel(tag)}`).join("; "), sourceFolders(file).join(" > ")]);
     const csv = "\uFEFF" + rows.map(row => row.map(csvCell).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `FieldNote_文件名-标签_${new Date().toISOString().slice(0, 10)}.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -238,6 +240,7 @@ export default function LocalRecognitionPage() {
     targets.forEach(key => dirtyAssetKeysRef.current.add(key));
     setAssignments(old => { const next = { ...old }; targets.forEach(key => { const existing = next[key] || []; next[key] = [...existing.filter(item => item.facet !== tag.facet), { ...tag, status: "confirmed", source: tag.reason.includes("候选") ? "candidate" : "ai_confirmed" }]; }); return next; });
   };
+  const toggleDeletion = (key: string) => { dirtyAssetKeysRef.current.add(key); setDeletedFiles(old => toggleSet(old, key)); };
   const chooseFacetTag = (tag: Tag) => {
     applyFacetTag(tag);
     setResult(old => {
@@ -272,19 +275,19 @@ export default function LocalRecognitionPage() {
     <header style={{ maxWidth: 1180, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}>
       <button onClick={() => setWorkflowStep("setup")} style={{ border: 0, background: "none", color: "#287b57" }}>← 修改导入设置</button><h2 style={{ margin: 0 }}>素材标记</h2><span style={{ color: "#849089", fontSize: 12, flex: 1 }}>标签自动同步 · 后台预识别 {prefetchProgress.done}/{prefetchProgress.total} · 云端 CSV 实时备份</span><a href="/api/local-assets" style={{ ...smallButton, textDecoration: "none" }}>下载云端备份</a><button disabled={!files.length} onClick={exportTagCsv} style={{ ...folderButton, border: 0, opacity: files.length ? 1 : .45 }}>导出当前 CSV</button>
     </header>
-    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span><span style={{ marginLeft: 14, color: "#88938c", fontSize: 9 }}>快捷键：↑↓ 素材 · ←→ 浏览标签 · Enter 确认并切到下一类型</span></div>
+    <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span><span style={{ marginLeft: 14, color: "#88938c", fontSize: 9 }}>快捷键：↑↓ 素材 · ←→ 浏览标签 · Enter 确认下一类型 · X 标记删除</span></div>
     <div style={{ maxWidth: 1180, margin: "auto", display: "grid", gridTemplateColumns: "270px minmax(360px,1fr) 350px", gap: 14 }}>
       <section style={card}>
         <h3 style={heading}>素材与标签筛选</h3>
         <p style={hint}>共 {files.length} 项，已选择 {selectedFiles.size} 项 · 哈希 {hashProgress}/{files.length}{hydrated ? " · 标签已同步" : ""}</p>
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}><button style={smallButton} onClick={() => setSelectedFiles(new Set(files.map(fileKey)))}>全选</button><button style={smallButton} onClick={() => setSelectedFiles(new Set())}>清除选择</button></div>
         {filterGroups.length > 0 && <div style={{ borderTop: "1px solid #e7ebe8", borderBottom: "1px solid #e7ebe8", padding: "8px 0", marginBottom: 8 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 6 }}><b>按标签筛选</b>{tagFilters.size > 0 && <button style={{ border: 0, background: "none", color: "#287b57", fontSize: 9 }} onClick={() => setTagFilters(new Set())}>清除筛选</button>}</div>{filterGroups.map(group => <div key={group.facet} style={{ marginBottom: 6 }}><span style={{ display: "block", color: "#8a938d", fontSize: 8, marginBottom: 3 }}>{group.facet}</span><div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{group.tags.map(tag => <button key={tagToken(tag)} title={`${tag.facet} / ${tagLabel(tag)}`} onClick={() => setTagFilters(old => toggleSet(old, tagToken(tag)))} style={{ ...tagChip, padding: "3px 5px", background: tagFilters.has(tagToken(tag)) ? "#2e805b" : "#edf7f1", color: tagFilters.has(tagToken(tag)) ? "white" : "#287653" }}>{tagLabel(tag)}</button>)}</div></div>)}</div>}
-        <p style={{ ...hint, margin: "4px 0" }}>显示 {visibleFiles.length}/{files.length} 项</p><div style={{ maxHeight: 560, overflow: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>{visibleFiles.map((f, i) => { const key = fileKey(f); return <div key={`${key}-${i}`} onClick={() => { setCurrent(f); setResult(null); }} style={{ position: "relative", border: current === f ? "2px solid #2c855d" : "2px solid transparent", borderRadius: 7, overflow: "hidden", background: "#edf0ed", cursor: "pointer" }}><Thumbnail file={f} /><input aria-label="选择素材" type="checkbox" checked={selectedFiles.has(key)} onClick={e => e.stopPropagation()} onChange={() => setSelectedFiles(old => toggleSet(old, key))} style={{ position: "absolute", top: 6, left: 6 }} /><div style={{ minHeight: 28, display: "flex", gap: 3, flexWrap: "wrap", padding: 4 }}>{(assignments[key] || []).slice(0, 3).map((tag, n) => <span title={tag.facet} key={n} style={{ ...tagChip, padding: "2px 4px" }}>{tagLabel(tag)}</span>)}{(assignments[key] || []).length > 3 && <span style={{ fontSize: 8 }}>+{assignments[key].length - 3}</span>}</div></div> })}</div>
+        <p style={{ ...hint, margin: "4px 0" }}>显示 {visibleFiles.length}/{files.length} 项 · 待删除 {deletedFiles.size} 项</p><div style={{ maxHeight: 560, overflow: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>{visibleFiles.map((f, i) => { const key = fileKey(f); return <div key={`${key}-${i}`} onClick={() => { setCurrent(f); setResult(null); }} style={{ position: "relative", border: current === f ? "2px solid #2c855d" : "2px solid transparent", borderRadius: 7, overflow: "hidden", background: "#edf0ed", cursor: "pointer", opacity: deletedFiles.has(key) ? .55 : 1 }}><Thumbnail file={f} /><input aria-label="选择素材" type="checkbox" checked={selectedFiles.has(key)} onClick={e => e.stopPropagation()} onChange={() => setSelectedFiles(old => toggleSet(old, key))} style={{ position: "absolute", top: 6, left: 6 }} />{deletedFiles.has(key) && <span style={{ position: "absolute", top: 5, right: 5, padding: "3px 6px", borderRadius: 5, background: "#b33", color: "white", fontSize: 9 }}>待删除</span>}<div style={{ minHeight: 28, display: "flex", gap: 3, flexWrap: "wrap", padding: 4 }}>{(assignments[key] || []).slice(0, 3).map((tag, n) => <span title={tag.facet} key={n} style={{ ...tagChip, padding: "2px 4px" }}>{tagLabel(tag)}</span>)}{(assignments[key] || []).length > 3 && <span style={{ fontSize: 8 }}>+{assignments[key].length - 3}</span>}</div></div> })}</div>
       </section>
       <section style={card}>
         <h3 style={heading}>第二步：查看当前素材</h3>
         <div style={{ height: 420, background: "#202421", display: "grid", placeItems: "center", borderRadius: 8, overflow: "hidden" }}>{preview && current?.type.startsWith("video/") ? <video key={preview} src={preview} controls autoPlay muted playsInline style={{ maxWidth: "100%", maxHeight: "100%" }} /> : preview ? <img src={preview} alt="本地预览" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ color: "#9ba39e" }}>请先选择文件夹</span>}</div>
-        <p style={{ fontSize: 10, color: "#87918b" }}>{current ? `${current.type || "媒体"} · ${(current.size / 1024 / 1024).toFixed(1)} MB · ${hashByKey[fileKey(current)]?.slice(0, 12) || "计算哈希中"}` : "未选择媒体"}</p>
+        <p style={{ fontSize: 10, color: "#87918b" }}>{current ? `${current.type || "媒体"} · ${(current.size / 1024 / 1024).toFixed(1)} MB · ${hashByKey[fileKey(current)]?.slice(0, 12) || "计算哈希中"}` : "未选择媒体"} {current && <button onClick={() => toggleDeletion(fileKey(current))} style={{ ...smallButton, marginLeft: 8, color: deletedFiles.has(fileKey(current)) ? "#fff" : "#a33", background: deletedFiles.has(fileKey(current)) ? "#b33" : "#fff" }}>{deletedFiles.has(fileKey(current)) ? "已标记待删除（X 撤销）" : "X 标记待删除"}</button>}</p>
         {current && sourceFolders(current).length > 0 && <div style={{ marginBottom: 9, padding: 8, borderRadius: 6, background: "#f2f3f2", color: "#747d77", fontSize: 9 }}><b>原始目录线索（只读，可能不准确）</b><div style={{ marginTop: 4 }}>{sourceFolders(current).join(" › ")}</div></div>}
         {current && <div style={{ color: "#738078", fontSize: 9, marginBottom: 5 }}>已确认标签</div>}
         {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title={`类型：${tag.facet}；点击移除`} key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tagLabel(tag)} ×</button>)}</div>}
