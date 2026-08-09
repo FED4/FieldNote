@@ -4,7 +4,7 @@ import path from "node:path";
 
 export const runtime = "nodejs";
 
-type Tag = { facet: string; name: string; confidence: number; reason: string };
+type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string };
 type AssetState = { hash: string; filename: string; size: number; mimeType: string; lastModified: number; tags: Tag[]; updatedAt: string };
 type Store = { version: 1; assets: Record<string, AssetState> };
 const dataDir = process.env.FIELDNOTE_DATA_DIR || "/data/fieldnote-prototype";
@@ -42,5 +42,5 @@ export async function POST(request: NextRequest) {
 function validHash(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
 function sanitizeTags(tags: unknown): Tag[] {
   if (!Array.isArray(tags)) return [];
-  return tags.slice(0, 200).map(tag => ({ facet: String(tag?.facet || "其他").slice(0, 80), name: String(tag?.name || "").slice(0, 160), confidence: Number(tag?.confidence || 0), reason: String(tag?.reason || "").slice(0, 500) })).filter(tag => tag.name);
+  return tags.slice(0, 200).map(tag => ({ facet: String(tag?.facet || "其他").slice(0, 80), path: Array.isArray(tag?.path) ? tag.path.slice(0, 8).map((item: unknown) => String(item).slice(0, 120)) : [], name: String(tag?.name || "").slice(0, 160), confidence: Number(tag?.confidence || 0), reason: String(tag?.reason || "").slice(0, 500) })).filter(tag => tag.name);
 }

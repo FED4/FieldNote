@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type Tag = { facet: string; name: string; confidence: number; reason: string };
+type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string };
 type VitaResult = { summary: string; tags: Tag[] };
 
 const defaultPrompt = "你是现场考察媒体整理助手。分析图片中的地点、设备、对象、活动、状态、问题和材料。标签应简短、客观，无法从画面确认时不要猜测。优先输出对工程考察和后续检索有价值的标签。";
@@ -19,6 +19,7 @@ export default function LocalRecognitionPage() {
   const [assignments, setAssignments] = useState<Record<string, Tag[]>>({});
   const [manualFacet, setManualFacet] = useState("设备");
   const [manualName, setManualName] = useState("");
+  const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [hashByKey, setHashByKey] = useState<Record<string, string>>({});
   const [hashProgress, setHashProgress] = useState(0);
   const [hydrated, setHydrated] = useState(false);
@@ -31,6 +32,11 @@ export default function LocalRecognitionPage() {
   const [error, setError] = useState("");
   const preview = useMemo(() => current ? URL.createObjectURL(current) : "", [current]);
   const voiceContext = current ? voiceByAsset[fileKey(current)] || "" : "";
+  const filterGroups = useMemo(() => {
+    const unique = new Map<string, Tag>(); Object.values(assignments).flat().forEach(tag => unique.set(tagToken(tag), tag));
+    return groupTagValues(Array.from(unique.values()));
+  }, [assignments]);
+  const visibleFiles = tagFilters.size ? files.filter(file => { const tokens = new Set((assignments[fileKey(file)] || []).map(tagToken)); return Array.from(tagFilters).every(token => tokens.has(token)); }) : files;
 
   useEffect(() => { const saved = localStorage.getItem("vita-system-prompt"); if (saved) setPrompt(saved); }, []);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
@@ -123,7 +129,7 @@ export default function LocalRecognitionPage() {
   const exportTagCsv = () => {
     if (!files.length) return;
     const rows = [["文件名", "相对路径", "SHA256", "标签"]];
-    for (const file of files) rows.push([file.name, fileKey(file), hashByKey[fileKey(file)] || "", (assignments[fileKey(file)] || []).map(tag => `${tag.facet}/${tag.name}`).join("; ")]);
+    for (const file of files) rows.push([file.name, fileKey(file), hashByKey[fileKey(file)] || "", (assignments[fileKey(file)] || []).map(tag => `${tag.facet}/${tagLabel(tag)}`).join("; ")]);
     const csv = "\uFEFF" + rows.map(row => row.map(csvCell).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `FieldNote_文件名-标签_${new Date().toISOString().slice(0, 10)}.csv`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -140,13 +146,14 @@ export default function LocalRecognitionPage() {
         <label style={folderButton}>选择图片 / 视频文件夹<input type="file" accept="image/*,video/*" multiple {...({ webkitdirectory: "" } as object)} onChange={chooseFolder} style={{ display: "none" }} /></label>
         <p style={hint}>共 {files.length} 项，已选择 {selectedFiles.size} 项 · 哈希 {hashProgress}/{files.length}{hydrated ? " · 标签已同步" : ""}</p>
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}><button style={smallButton} onClick={() => setSelectedFiles(new Set(files.map(fileKey)))}>全选</button><button style={smallButton} onClick={() => setSelectedFiles(new Set())}>清除选择</button></div>
-        <div style={{ maxHeight: 560, overflow: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>{files.map((f, i) => { const key = fileKey(f); return <div key={`${key}-${i}`} onClick={() => { setCurrent(f); setResult(null); }} style={{ position: "relative", border: current === f ? "2px solid #2c855d" : "2px solid transparent", borderRadius: 7, overflow: "hidden", background: "#edf0ed", cursor: "pointer" }}><Thumbnail file={f} /><input aria-label="选择素材" type="checkbox" checked={selectedFiles.has(key)} onClick={e => e.stopPropagation()} onChange={() => setSelectedFiles(old => toggleSet(old, key))} style={{ position: "absolute", top: 6, left: 6 }} /><div style={{ minHeight: 28, display: "flex", gap: 3, flexWrap: "wrap", padding: 4 }}>{(assignments[key] || []).slice(0, 3).map((tag, n) => <span key={n} style={{ ...tagChip, padding: "2px 4px" }}>{tag.name}</span>)}{(assignments[key] || []).length > 3 && <span style={{ fontSize: 8 }}>+{assignments[key].length - 3}</span>}</div></div> })}</div>
+        {filterGroups.length > 0 && <div style={{ borderTop: "1px solid #e7ebe8", borderBottom: "1px solid #e7ebe8", padding: "8px 0", marginBottom: 8 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 6 }}><b>按标签筛选</b>{tagFilters.size > 0 && <button style={{ border: 0, background: "none", color: "#287b57", fontSize: 9 }} onClick={() => setTagFilters(new Set())}>清除筛选</button>}</div>{filterGroups.map(group => <div key={group.facet} style={{ marginBottom: 6 }}><span style={{ display: "block", color: "#8a938d", fontSize: 8, marginBottom: 3 }}>{group.facet}</span><div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{group.tags.map(tag => <button key={tagToken(tag)} title={`${tag.facet} / ${tagLabel(tag)}`} onClick={() => setTagFilters(old => toggleSet(old, tagToken(tag)))} style={{ ...tagChip, padding: "3px 5px", background: tagFilters.has(tagToken(tag)) ? "#2e805b" : "#edf7f1", color: tagFilters.has(tagToken(tag)) ? "white" : "#287653" }}>{tagLabel(tag)}</button>)}</div></div>)}</div>}
+        <p style={{ ...hint, margin: "4px 0" }}>显示 {visibleFiles.length}/{files.length} 项</p><div style={{ maxHeight: 560, overflow: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>{visibleFiles.map((f, i) => { const key = fileKey(f); return <div key={`${key}-${i}`} onClick={() => { setCurrent(f); setResult(null); }} style={{ position: "relative", border: current === f ? "2px solid #2c855d" : "2px solid transparent", borderRadius: 7, overflow: "hidden", background: "#edf0ed", cursor: "pointer" }}><Thumbnail file={f} /><input aria-label="选择素材" type="checkbox" checked={selectedFiles.has(key)} onClick={e => e.stopPropagation()} onChange={() => setSelectedFiles(old => toggleSet(old, key))} style={{ position: "absolute", top: 6, left: 6 }} /><div style={{ minHeight: 28, display: "flex", gap: 3, flexWrap: "wrap", padding: 4 }}>{(assignments[key] || []).slice(0, 3).map((tag, n) => <span title={tag.facet} key={n} style={{ ...tagChip, padding: "2px 4px" }}>{tagLabel(tag)}</span>)}{(assignments[key] || []).length > 3 && <span style={{ fontSize: 8 }}>+{assignments[key].length - 3}</span>}</div></div> })}</div>
       </section>
       <section style={card}>
         <h3 style={heading}>第二步：查看当前素材</h3>
         <div style={{ height: 420, background: "#202421", display: "grid", placeItems: "center", borderRadius: 8, overflow: "hidden" }}>{preview && current?.type.startsWith("video/") ? <video src={preview} controls style={{ maxWidth: "100%", maxHeight: "100%" }} /> : preview ? <img src={preview} alt="本地预览" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ color: "#9ba39e" }}>请先选择文件夹</span>}</div>
         <p style={{ fontSize: 10, color: "#87918b" }}>{current ? `${current.type || "媒体"} · ${(current.size / 1024 / 1024).toFixed(1)} MB · ${hashByKey[fileKey(current)]?.slice(0, 12) || "计算哈希中"}` : "未选择媒体"}</p>
-        {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title="点击移除" key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tag.name} ×</button>)}</div>}
+        {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title={`类型：${tag.facet}；点击移除`} key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tagLabel(tag)} ×</button>)}</div>}
         <h3 style={heading}>System Prompt</h3>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)} style={{ width: "100%", minHeight: 120, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}><button onClick={() => void toggleMicrophone("overwrite", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "停止并覆写系统指令" : "语音覆写系统指令"}</button><button onClick={() => void toggleMicrophone("append", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "append" ? "停止并追加系统指令" : "语音追加系统指令"}</button></div>
@@ -159,7 +166,7 @@ export default function LocalRecognitionPage() {
       <section style={card}>
         <h3 style={heading}>第三步：点击确认推荐标签</h3>
         {!result && <p style={hint}>识别完成后，这里会显示画面摘要、Facet、标签、置信度和视觉依据。</p>}
-        {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n双击可修改标签`} onClick={() => setSelectedTags(old => toggleSet(old, index))} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tag.name}</button>)}</div></div>)}</div></>}
+        {result && <><div style={{ background: "#f4f7f4", borderRadius: 7, padding: 12, fontSize: 12, lineHeight: 1.7 }}>{result.summary}</div><div style={{ marginTop: 12 }}>{groupTags(result.tags).map(group => <div key={group.facet} style={{ marginBottom: 12 }}><div style={{ color: "#7d8881", fontSize: 10, marginBottom: 6 }}>{group.facet} <span style={{ color: "#adb4af" }}>· 类型</span></div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{group.items.map(({ tag, index }) => <button key={index} title={`层级：${tagLabel(tag)}\n${Math.round((tag.confidence || 0) * 100)}% · ${tag.reason || "暂无解释"}\n双击可修改标签`} onClick={() => setSelectedTags(old => toggleSet(old, index))} onDoubleClick={() => editTagWithPrompt(index, tag, setResult)} style={{ ...capsule, ...(selectedTags.has(index) ? selectedCapsule : {}) }}>{selectedTags.has(index) && <span>✓ </span>}{tagLabel(tag)}</button>)}</div></div>)}</div></>}
         <h3 style={{ ...heading, marginTop: 14 }}>手工标签</h3><div style={{ display: "grid", gridTemplateColumns: "90px 1fr 42px", gap: 5 }}><input value={manualFacet} onChange={e => setManualFacet(e.target.value)} placeholder="Facet" style={tagInput} /><input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="标签名称" style={tagInput} /><button style={smallButton} onClick={() => { if (!manualName.trim()) return; setResult(old => ({ summary: old?.summary || "手工标签", tags: [...(old?.tags || []), { facet: manualFacet.trim() || "其他", name: manualName.trim(), confidence: 1, reason: "人工添加" }] })); setSelectedTags(old => new Set(old).add(result?.tags.length || 0)); setManualName(""); }}>新增</button></div>
         <button disabled={!result || !selectedTags.size || !(selectedFiles.size || current)} onClick={() => { const targets = selectedFiles.size ? selectedFiles : new Set(current ? [fileKey(current)] : []); const tags = (result?.tags || []).filter((_, i) => selectedTags.has(i)); setAssignments(old => { const next = { ...old }; targets.forEach(key => { const existing = next[key] || []; next[key] = [...existing, ...tags.filter(t => !existing.some(x => x.facet === t.facet && x.name === t.name))]; }); return next; }); }} style={{ ...folderButton, border: 0, width: "100%", marginTop: 14, opacity: !result || !selectedTags.size ? .5 : 1 }}>＋ 添加 {selectedTags.size} 个标签到 {selectedFiles.size || (current ? 1 : 0)} 个素材</button>
       </section>
@@ -182,7 +189,10 @@ const stepBadge: React.CSSProperties = { width: 20, height: 20, borderRadius: "5
 function fileKey(file: File) { return file.webkitRelativePath || file.name; }
 function csvCell(value: string) { return `"${value.replaceAll('"', '""')}"`; }
 function sourceFolders(file: File) { const parts = fileKey(file).split("/"); return parts.length > 1 ? parts.slice(1, -1) : []; }
-function importedFolderTags(file: File): Tag[] { return sourceFolders(file).map(name => ({ facet: "原始目录", name, confidence: 0.5, reason: "来自导入文件夹层级；仅作为初步分类参考，尚未确认" })); }
+function importedFolderTags(file: File): Tag[] { const folders = sourceFolders(file); return folders.map((name, index) => ({ facet: "原始目录", path: folders.slice(0, index), name, confidence: 0.5, reason: "来自导入文件夹层级；仅作为初步分类参考，尚未确认" })); }
+function tagLabel(tag: Tag) { return [...(tag.path || []), tag.name].filter(Boolean).join(" › "); }
+function tagToken(tag: Tag) { return `${tag.facet}\u0000${tagLabel(tag)}`; }
+function groupTagValues(tags: Tag[]) { const groups = new Map<string, Tag[]>(); tags.forEach(tag => groups.set(tag.facet || "其他", [...(groups.get(tag.facet || "其他") || []), tag])); return Array.from(groups, ([facet, values]) => ({ facet, tags: values.sort((a, b) => tagLabel(a).localeCompare(tagLabel(b), "zh-CN")) })); }
 async function sha256(file: File) { const bytes = await file.arrayBuffer(); const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join(""); }
 function fileDataUrl(file: Blob) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); }); }
 async function optimizedImageDataUrl(file: File) {
