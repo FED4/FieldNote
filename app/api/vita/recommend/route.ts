@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
   const mediaContext = mediaKind ? `\n\n本次提供了${mediaKind === "video" ? "视频" : "图片"}，可以引用其中实际可见的视觉证据。` : "\n\n本次没有提供任何图片或视频。禁止声称看到了画面、设备、压力表或其他视觉信息；所有 reason 只能引用语音和原始目录，并应对无法验证的信息降低置信度。";
   const promptIsMeta = systemPrompt?.includes("标签策略设计助手") || systemPrompt?.includes("帮助我编写一份高质量的 System Prompt");
   const effectivePrompt = promptIsMeta ? "你是现场考察媒体标签助手。直接分析输入并推荐可检索的独立标签，不要编写或讨论 Prompt。" : systemPrompt || "识别现场考察媒体并推荐结构化标签。";
-  const formatInstruction = `\n\n标签拆分硬规则：每个 tag 只能表达一个概念并且只属于一个 Facet；禁止在一个 tag 中使用父子路径，禁止输出 path，禁止用“/”“›”“-”把不同概念合并。厂房、工段、地点、设备、部件必须拆成不同 tag。例如“动力车间的锅炉房”必须输出两个对象：{"facet":"工段","name":"动力车间"} 和 {"facet":"设备","name":"锅炉房"}，不能输出“动力车间 › 锅炉房”。\n请只返回合法 JSON，不要使用 Markdown、工具标记或注释：{"summary":"结合媒体与讨论的简述","tags":[{"facet":"厂房|工段|地点|设备|部件|活动|工艺|状态|对象|问题|材料|文档类型|人员|其他","name":"单一概念标签名称","confidence":0.0,"reason":"说明依据来自图片、视频、语音、原始目录或组合"}]}`;
+  const formatInstruction = `\n\n严格遵守 System Prompt 中的 JSON Schema。只有“工段”和“设备”是正式 Facet；其他信息只能进入 context，禁止创建其他 Facet。每个 tag 只能表达一个概念，禁止输出跨 Facet 路径。只返回合法 JSON。`;
   const content: Array<Record<string, unknown>> = [{ type: "text", text: `${effectivePrompt}${importedContext}${mediaContext}${transcriptContext}${formatInstruction}` }];
   if (mediaKind === "image") content.push({ type: "image_url", image_url: { url: media } });
   if (mediaKind === "video") content.push({ type: "video_url", video_url: { url: media } });
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
   if (typeof answer !== "string") return NextResponse.json({ error: "VITA 返回内容为空" }, { status: 502 });
   try {
     const cleaned = answer.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    return NextResponse.json({ result: JSON.parse(cleaned), raw: answer });
+    return NextResponse.json({ result: normalizeResult(JSON.parse(cleaned)), raw: answer });
   } catch {
     const repair = await fetch(endpoint, {
       method: "POST",
@@ -51,8 +51,18 @@ export async function POST(request: NextRequest) {
     });
     const repairedBody = await repair.json().catch(() => null); const repaired = repairedBody?.choices?.[0]?.message?.content;
     if (repair.ok && typeof repaired === "string") {
-      try { return NextResponse.json({ result: JSON.parse(repaired.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")), repaired: true }); } catch { /* handled below */ }
+      try { return NextResponse.json({ result: normalizeResult(JSON.parse(repaired.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""))), repaired: true }); } catch { /* handled below */ }
     }
     return NextResponse.json({ error: "VITA 返回的标签 JSON 格式损坏，请重试识别" }, { status: 502 });
   }
+}
+
+function normalizeResult(value: any) {
+  if (Array.isArray(value?.tags) && value.tags.every((tag: any) => tag?.facet && tag?.name)) return value;
+  const tags: Array<{ facet: string; name: string; confidence: number; reason: string; evidence?: string[] }> = [];
+  for (const facet of ["工段", "设备"]) for (const item of Array.isArray(value?.facets?.[facet]) ? value.facets[facet] : []) if (item?.tag) tags.push({ facet, name: String(item.tag), confidence: Number(item.confidence || 0), reason: String(item.reason || ""), evidence: Array.isArray(item.evidence) ? item.evidence : [] });
+  for (const group of Array.isArray(value?.tags) ? value.tags : []) for (const item of Array.isArray(group?.facets) ? group.facets : []) if (["工段", "设备"].includes(item?.id) && item?.name) tags.push({ facet: item.id, name: String(item.name), confidence: Number(item.confidence || .5), reason: "模型未按指定 Schema 返回，已兼容转换" });
+  const context = value?.context && typeof value.context === "object" ? value.context : {};
+  const summary = [context.observation, context.process_context, context.activity_context, context.state_context, context.problem_context, context.discussion_context, value?.evidence_summary].filter(Boolean).join("\n") || "未提取到有证据支持的 Context。";
+  return { summary, tags, context, evidence_summary: value?.evidence_summary || "", conflicts: Array.isArray(value?.conflicts) ? value.conflicts : [], new_tag_suggestions: value?.new_tag_suggestions || { 工段: [], 设备: [] } };
 }

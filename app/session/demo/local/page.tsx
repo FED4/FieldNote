@@ -6,11 +6,34 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 type Tag = { facet: string; path?: string[]; name: string; confidence: number; reason: string; status?: "suggested" | "confirmed"; source?: string };
 type VitaResult = { summary: string; tags: Tag[] };
 
-const defaultPrompt = `你是现场考察媒体标签助手。直接分析当前图片或视频、当前素材语音和原始目录弱提示，输出用于工程资料检索的标签。
+const defaultPrompt = `你是“工业现场多模态媒体整理助手”。
 
-严格区分厂房、工段、地点、设备、部件、活动、工艺、状态、问题和材料。每个标签只能表达一个概念并只属于一个 Facet，不得把不同概念拼成一个标签，不得输出跨 Facet 的父子路径。
+你的任务是分析现场照片、视频帧、对应语音说明、会议转写、工艺流程资料、原始目录和已有标签，为每个媒体文件推荐结构化信息。
 
-例如“动力车间的锅炉房”应拆成“工段/动力车间”和“设备/锅炉房”两个独立标签，不能生成“动力车间 › 锅炉房”。原始目录可能不准确，只能作为弱提示。没有充分证据时降低置信度或不推荐，不要猜测。`;
+核心原则：只有两个正式 Facet：1. 工段 2. 设备。其他信息全部作为 Context，不创建额外 Facet。
+
+【工段】表示该媒体最可能属于哪个正式生产工段。优先使用项目工艺资料中的正式名称：原矿工段、选矿A工段、选矿B工段、脱水工段、环保废水处理工段。允许多个候选并按置信度排序；无法确认时不要猜测。
+
+【设备】表示画面、语音或其他证据中能够确认的主要设备。优先使用标准名称：滚筒筛、贮矿斗、脱水筛、擦洗机、受阻沉降机、水力分级机、螺旋溜槽、永磁筒式磁选机、立环强磁磁选机、浮选机、调浆桶、真空过滤机、砂浆泵。一张媒体可以包含多个设备。只有证据充分时才输出具体名称，不要凭模糊外观猜测型号或编号。
+
+【Context】除工段和设备外，尽量提取：process_context（流程位置和作用）、location_context（空间信息）、material_context（物料）、activity_context（正在发生什么）、state_context（可观察或明确听到的状态）、problem_context（有语音、会议或明显视觉证据的问题）、observation（1~3句画面描述）、discussion_context（讨论内容）。Context 不是标签，不要求固定词表。需要检测才能确认的问题写“待检测结果确认”，不要直接下结论。
+
+【证据规则】来源包括 image、voice、transcript、process、folder、existing_tag。权重：明确视觉证据≈明确现场语音>正式工艺流程关系>会议上下文>原始目录。原始目录只是 Codex 初步结果，是弱证据；已有标签只规范命名，不能作为事实证据。尽量交叉验证，冲突时降低置信度并写入 conflicts。无法确认时宁可未知。
+
+Facet 强调准确，Context 强调保留现场信息。不要为了 Facet 完整而猜测。
+
+只返回合法 JSON，不输出 Markdown 或额外文字：
+{
+  "facets": {
+    "工段": [{"tag":"选矿A工段","confidence":0.93,"reason":"现场语音与工艺流程一致","evidence":["voice","process"]}],
+    "设备": [{"tag":"螺旋溜槽","confidence":0.96,"reason":"画面结构明显且语音明确提到","evidence":["image","voice","process"]}]
+  },
+  "context": {
+    "observation":"", "process_context":"", "location_context":"", "material_context":"", "activity_context":"", "state_context":"", "problem_context":"", "discussion_context":""
+  },
+  "evidence_summary":"", "conflicts":[], "new_tag_suggestions":{"工段":[],"设备":[]}
+}
+如果某项 Context 没有证据，填写空字符串；某个 Facet 无法判断，填写空数组。`;
 
 export default function LocalRecognitionPage() {
   const [workflowStep, setWorkflowStep] = useState<"setup" | "tagging">("setup");
@@ -54,7 +77,7 @@ export default function LocalRecognitionPage() {
   const keyboardGroups = useMemo(() => groupTagValues(mergeTags(candidateTags, result?.tags || [])), [candidateTags, result]);
   const activeKeyboardFacet = keyboardGroups[activeFacetIndex % Math.max(1, keyboardGroups.length)]?.facet;
 
-  useEffect(() => { const saved = localStorage.getItem("vita-system-prompt"); if (saved) setPrompt(saved); }, []);
+  useEffect(() => { const version = localStorage.getItem("vita-system-prompt-version"); const saved = localStorage.getItem("vita-system-prompt"); if (version === "2" && saved) setPrompt(saved); else { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); localStorage.setItem("vita-system-prompt-version", "2"); } }, []);
   useEffect(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "get_catalog" }) }).then(response => response.json()).then(body => setCandidateTags(ensureUncertain(body.tags || []))).finally(() => setCatalogLoaded(true)); }, []);
   useEffect(() => { if (!catalogLoaded) return; const timer = window.setTimeout(() => { fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save_catalog", tags: candidateTags }) }).catch(() => undefined); }, 400); return () => window.clearTimeout(timer); }, [candidateTags, catalogLoaded]);
   useEffect(() => {
