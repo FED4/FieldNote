@@ -9,11 +9,17 @@ type AssetState = { hash: string; filename: string; relativePath?: string; sourc
 type Store = { version: 1; assets: Record<string, AssetState>; tagCatalog?: Tag[] };
 const dataDir = process.env.FIELDNOTE_DATA_DIR || "/data/fieldnote-prototype";
 const storePath = path.join(dataDir, "local-asset-state.json");
+const csvBackupPath = path.join(dataDir, "FieldNote-live-backup.csv");
 let writeQueue = Promise.resolve();
 
 async function loadStore(): Promise<Store> {
   try { return JSON.parse(await readFile(storePath, "utf8")) as Store; }
   catch { return { version: 1, assets: {} }; }
+}
+
+export async function GET() {
+  try { return new NextResponse(await readFile(csvBackupPath), { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=FieldNote-live-backup.csv" } }); }
+  catch { return NextResponse.json({ error: "云端 CSV 备份尚未生成" }, { status: 404 }); }
 }
 
 export async function POST(request: NextRequest) {
@@ -45,6 +51,7 @@ export async function POST(request: NextRequest) {
       const temp = `${storePath}.${process.pid}.tmp`;
       await writeFile(temp, JSON.stringify(store, null, 2), { mode: 0o600 });
       await rename(temp, storePath);
+      await writeCsvBackup(store);
     });
     await writeQueue;
     return NextResponse.json({ saved: incoming.length });
@@ -56,4 +63,10 @@ function validHash(value: unknown): value is string { return typeof value === "s
 function sanitizeTags(tags: unknown): Tag[] {
   if (!Array.isArray(tags)) return [];
   return tags.slice(0, 200).map(tag => ({ facet: String(tag?.facet || "其他").slice(0, 80), path: Array.isArray(tag?.path) ? tag.path.slice(0, 8).map((item: unknown) => String(item).slice(0, 120)) : [], name: String(tag?.name || "").slice(0, 160), confidence: Number(tag?.confidence || 0), reason: String(tag?.reason || "").slice(0, 500), status: tag?.status === "suggested" ? "suggested" as const : "confirmed" as const, source: String(tag?.source || "manual").slice(0, 40) })).filter(tag => tag.name && tag.facet !== "原始目录");
+}
+async function writeCsvBackup(store: Store) {
+  const rows = [["文件名", "相对路径", "SHA256", "已确认标签", "原始目录线索", "更新时间"]];
+  for (const asset of Object.values(store.assets)) rows.push([asset.filename, asset.relativePath || asset.filename, asset.hash, asset.tags.filter(tag => tag.status === "confirmed" || !tag.status).map(tag => `${tag.facet}/${[...(tag.path || []), tag.name].join(" > ")}`).join("; "), (asset.sourceContext || []).join(" > "), asset.updatedAt]);
+  const csv = "\uFEFF" + rows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\r\n");
+  const temp = `${csvBackupPath}.${process.pid}.tmp`; await writeFile(temp, csv, { mode: 0o600 }); await rename(temp, csvBackupPath);
 }

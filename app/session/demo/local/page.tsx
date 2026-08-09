@@ -13,11 +13,15 @@ const defaultPrompt = `你是现场考察媒体标签助手。直接分析当前
 例如“动力车间的锅炉房”应拆成“工段/动力车间”和“设备/锅炉房”两个独立标签，不能生成“动力车间 › 锅炉房”。原始目录可能不准确，只能作为弱提示。没有充分证据时降低置信度或不推荐，不要猜测。`;
 
 export default function LocalRecognitionPage() {
+  const [workflowStep, setWorkflowStep] = useState<"setup" | "tagging">("setup");
   const [files, setFiles] = useState<File[]>([]);
   const [current, setCurrent] = useState<File | null>(null);
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [voiceByAsset, setVoiceByAsset] = useState<Record<string, string>>({});
   const [result, setResult] = useState<VitaResult | null>(null);
+  const [recommendationCache, setRecommendationCache] = useState<Record<string, VitaResult>>({});
+  const [prefetchProgress, setPrefetchProgress] = useState({ done: 0, total: 0 });
+  const prefetchingRef = useRef(new Set<string>());
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [selectedTags, setSelectedTags] = useState<Set<number>>(new Set());
   const [assignments, setAssignments] = useState<Record<string, Tag[]>>({});
@@ -77,6 +81,15 @@ export default function LocalRecognitionPage() {
     }, 500);
     return () => window.clearTimeout(timer);
   }, [assignments, files, hashByKey, hydrated]);
+  useEffect(() => {
+    if (workflowStep !== "tagging" || !current) return;
+    const cached = recommendationCache[fileKey(current)]; if (cached) { setResult(cached); setSelectedTags(defaultTagIndexes(cached.tags || [])); }
+    const start = Math.max(0, files.indexOf(current)); const windowFiles = files.slice(start, start + 21).filter(file => file.type.startsWith("image/") && !recommendationCache[fileKey(file)] && !prefetchingRef.current.has(fileKey(file)));
+    if (!windowFiles.length) return; setPrefetchProgress(progress => ({ done: progress.done, total: progress.total + windowFiles.length }));
+    windowFiles.forEach(file => prefetchingRef.current.add(fileKey(file)));
+    let cursor = 0; const worker = async () => { while (cursor < windowFiles.length) { const file = windowFiles[cursor++]; try { const dataUrl = await optimizedImageDataUrl(file); const response = await fetch("/api/vita/recommend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaDataUrl: dataUrl, systemPrompt: prompt, voiceContext: voiceByAsset[fileKey(file)] || "", sourceContext: sourceFolders(file) }) }); const body = await response.json(); if (response.ok && body.result) { setRecommendationCache(old => ({ ...old, [fileKey(file)]: body.result })); if (file === current) { setResult(body.result); setSelectedTags(defaultTagIndexes(body.result.tags || [])); } } } catch { /* a failed item can be recognized on demand */ } finally { prefetchingRef.current.delete(fileKey(file)); setPrefetchProgress(progress => ({ ...progress, done: progress.done + 1 })); } } };
+    void Promise.all([worker(), worker()]);
+  }, [workflowStep, current, files, prompt, recommendationCache, voiceByAsset]);
 
   const chooseFolder = (e: ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files || []).filter(f => f.type.startsWith("image/") || f.type.startsWith("video/"));
@@ -113,7 +126,7 @@ export default function LocalRecognitionPage() {
       catch { throw new Error(response.status === 413 ? "媒体文件过大，请使用压缩图片或“仅根据语音推荐”" : response.status === 502 ? "HTTPS 临时隧道连接失败，请稍后重试" : `识别服务返回异常响应（HTTP ${response.status}）`); }
       if (!response.ok) throw new Error(body.error || "识别失败");
       if (!body.result) throw new Error("识别结果为空");
-      setResult(body.result); setSelectedTags(defaultTagIndexes(body.result.tags || []));
+      setResult(body.result); if (current) setRecommendationCache(old => ({ ...old, [fileKey(current)]: body.result! })); setSelectedTags(defaultTagIndexes(body.result.tags || []));
     } catch (e) { setError(e instanceof Error ? e.message : "识别失败"); }
     finally { setLoading(false); }
   };
@@ -185,15 +198,34 @@ export default function LocalRecognitionPage() {
   };
   const removeRecommended = (index: number) => { setResult(old => old ? { ...old, tags: old.tags.filter((_, i) => i !== index) } : old); setSelectedTags(old => new Set(Array.from(old).filter(i => i !== index).map(i => i > index ? i - 1 : i))); };
 
+  const beginTagging = async () => {
+    if (!files.length) { setError("请先选择包含图片或视频的文件夹"); return; }
+    localStorage.setItem("vita-system-prompt", prompt); setRecommendationCache({}); setPrefetchProgress({ done: 0, total: 0 }); await generateCandidates(); setWorkflowStep("tagging");
+  };
+
+  if (workflowStep === "setup") return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
+    <header style={{ maxWidth: 900, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}><Link href="/session/demo" style={{ color: "#287b57", textDecoration: "none" }}>← 返回工作台</Link><h2 style={{ margin: 0 }}>开始一次素材整理</h2></header>
+    <section style={{ ...card, maxWidth: 900, margin: "auto", padding: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 18 }}><b style={{ ...stepBadge, background: "#287b57", color: "white" }}>1</b><strong>导入与标签规则</strong><span style={{ color: "#9aa29d", fontSize: 11 }}>下一步进入逐张标记</span></div>
+      <h3 style={heading}>选择本地文件夹</h3><label style={{ ...folderButton, maxWidth: 280 }}>选择图片 / 视频文件夹<input type="file" accept="image/*,video/*" multiple {...({ webkitdirectory: "" } as object)} onChange={chooseFolder} style={{ display: "none" }} /></label>
+      <p style={hint}>{files.length ? `已读取 ${files.length} 个素材 · SHA-256 ${hashProgress}/${files.length}${hydrated ? " · 历史标签已恢复" : ""}` : "支持包含多层子目录的图片和视频文件夹，原始文件不会上传。"}</p>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 22 }}><h3 style={heading}>System Prompt</h3><button onClick={() => { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); }} style={{ ...smallButton, marginBottom: 8 }}>恢复默认标签规则</button></div>
+      <textarea value={prompt} onChange={event => setPrompt(event.target.value)} style={{ width: "100%", minHeight: 230, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 12, lineHeight: 1.7 }} />
+      {isMetaPrompt && <div style={{ marginTop: 7, padding: 9, borderRadius: 6, background: "#fff4dd", color: "#8a641d", fontSize: 11 }}>当前是 Meta Prompt，不适合直接分类。建议点击“恢复默认标签规则”。</div>}
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}><button onClick={() => void toggleMicrophone("overwrite", "system")} style={smallButton}>{microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "停止并覆写系统指令" : "语音覆写系统指令"}</button><button onClick={() => void toggleMicrophone("append", "system")} style={smallButton}>{microphoneRef.current?.target === "system" && recordingMode === "append" ? "停止并追加系统指令" : "语音追加系统指令"}</button></div>
+      {error && <p style={{ color: "#b34242", fontSize: 12 }}>{error}</p>}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 22 }}><button disabled={!files.length || candidateLoading} onClick={() => void beginTagging()} style={{ ...folderButton, border: 0, minWidth: 220, opacity: !files.length || candidateLoading ? .5 : 1 }}>{candidateLoading ? "正在生成候选标签…" : "下一步：生成候选并开始标记"}</button></div>
+    </section>
+  </main>;
+
   return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
     <header style={{ maxWidth: 1180, margin: "0 auto 18px", display: "flex", alignItems: "center", gap: 14 }}>
-      <Link href="/session/demo" style={{ color: "#287b57", textDecoration: "none" }}>← 返回工作台</Link><h2 style={{ margin: 0 }}>本地素材整理</h2><span style={{ color: "#849089", fontSize: 12, flex: 1 }}>原文件留在电脑，仅识别内容发送给腾讯云</span><button disabled={!files.length} onClick={exportTagCsv} style={{ ...folderButton, border: 0, opacity: files.length ? 1 : .45 }}>导出文件名-标签 CSV</button>
+      <button onClick={() => setWorkflowStep("setup")} style={{ border: 0, background: "none", color: "#287b57" }}>← 修改导入设置</button><h2 style={{ margin: 0 }}>素材标记</h2><span style={{ color: "#849089", fontSize: 12, flex: 1 }}>标签自动同步 · 后台预识别 {prefetchProgress.done}/{prefetchProgress.total} · 云端 CSV 实时备份</span><a href="/api/local-assets" style={{ ...smallButton, textDecoration: "none" }}>下载云端备份</a><button disabled={!files.length} onClick={exportTagCsv} style={{ ...folderButton, border: 0, opacity: files.length ? 1 : .45 }}>导出当前 CSV</button>
     </header>
     <div style={{ maxWidth: 1180, margin: "0 auto 14px", background: "#fff", border: "1px solid #e0e5e1", borderRadius: 9, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: "#67726b", fontSize: 11 }}><b style={stepBadge}>1</b><span>选择文件夹</span><i>→</i><b style={stepBadge}>2</b><span>选择素材</span><i>→</i><b style={stepBadge}>3</b><span>推荐并确认标签</span><i>→</i><b style={stepBadge}>4</b><span>导出 CSV</span><span style={{ marginLeft: 14, color: "#88938c", fontSize: 9 }}>快捷键：↑↓ 素材 · ←→ 标签 · Enter 下一类型</span></div>
     <div style={{ maxWidth: 1180, margin: "auto", display: "grid", gridTemplateColumns: "270px minmax(360px,1fr) 350px", gap: 14 }}>
       <section style={card}>
-        <h3 style={heading}>第一步：选择本地文件夹</h3>
-        <label style={folderButton}>选择图片 / 视频文件夹<input type="file" accept="image/*,video/*" multiple {...({ webkitdirectory: "" } as object)} onChange={chooseFolder} style={{ display: "none" }} /></label>
+        <h3 style={heading}>素材与标签筛选</h3>
         <p style={hint}>共 {files.length} 项，已选择 {selectedFiles.size} 项 · 哈希 {hashProgress}/{files.length}{hydrated ? " · 标签已同步" : ""}</p>
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}><button style={smallButton} onClick={() => setSelectedFiles(new Set(files.map(fileKey)))}>全选</button><button style={smallButton} onClick={() => setSelectedFiles(new Set())}>清除选择</button></div>
         {filterGroups.length > 0 && <div style={{ borderTop: "1px solid #e7ebe8", borderBottom: "1px solid #e7ebe8", padding: "8px 0", marginBottom: 8 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 6 }}><b>按标签筛选</b>{tagFilters.size > 0 && <button style={{ border: 0, background: "none", color: "#287b57", fontSize: 9 }} onClick={() => setTagFilters(new Set())}>清除筛选</button>}</div>{filterGroups.map(group => <div key={group.facet} style={{ marginBottom: 6 }}><span style={{ display: "block", color: "#8a938d", fontSize: 8, marginBottom: 3 }}>{group.facet}</span><div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{group.tags.map(tag => <button key={tagToken(tag)} title={`${tag.facet} / ${tagLabel(tag)}`} onClick={() => setTagFilters(old => toggleSet(old, tagToken(tag)))} style={{ ...tagChip, padding: "3px 5px", background: tagFilters.has(tagToken(tag)) ? "#2e805b" : "#edf7f1", color: tagFilters.has(tagToken(tag)) ? "white" : "#287653" }}>{tagLabel(tag)}</button>)}</div></div>)}</div>}
@@ -206,10 +238,6 @@ export default function LocalRecognitionPage() {
         {current && sourceFolders(current).length > 0 && <div style={{ marginBottom: 9, padding: 8, borderRadius: 6, background: "#f2f3f2", color: "#747d77", fontSize: 9 }}><b>原始目录线索（只读，可能不准确）</b><div style={{ marginTop: 4 }}>{sourceFolders(current).join(" › ")}</div></div>}
         {current && <div style={{ color: "#738078", fontSize: 9, marginBottom: 5 }}>已确认标签</div>}
         {current && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>{(assignments[fileKey(current)] || []).map((tag, i) => <button title={`类型：${tag.facet}；点击移除`} key={`${tag.facet}-${tag.name}-${i}`} onClick={() => removeAssigned(fileKey(current), i, setAssignments)} style={tagChip}>{tag.facet} / {tagLabel(tag)} ×</button>)}</div>}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}><h3 style={heading}>System Prompt</h3><button onClick={() => { setPrompt(defaultPrompt); localStorage.setItem("vita-system-prompt", defaultPrompt); }} style={{ ...smallButton, marginBottom: 8 }}>恢复标签识别默认指令</button></div>
-        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} style={{ width: "100%", minHeight: 120, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
-        {isMetaPrompt && <div style={{ marginTop: 6, padding: 8, borderRadius: 6, background: "#fff4dd", color: "#8a641d", fontSize: 10, lineHeight: 1.6 }}>当前内容是用来“生成 Prompt”的 Meta Prompt，不适合直接识别媒体。请点击“恢复标签识别默认指令”。</div>}
-        <div style={{ display: "flex", gap: 6, marginTop: 5 }}><button onClick={() => void toggleMicrophone("overwrite", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "overwrite" ? "停止并覆写系统指令" : "语音覆写系统指令"}</button><button onClick={() => void toggleMicrophone("append", "system")} style={{ ...smallButton, color: microphoneRef.current?.target === "system" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "system" && recordingMode === "append" ? "停止并追加系统指令" : "语音追加系统指令"}</button></div>
         <h3 style={{ ...heading, marginTop: 14 }}>Voice Context · 会议语音</h3>
         <textarea value={voiceContext} onChange={e => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: e.target.value })); }} placeholder="仅对当前图片有效，例如：这是二号流槽改造后的第一次试机……" style={{ width: "100%", minHeight: 105, resize: "vertical", border: "1px solid #dce2dd", borderRadius: 7, padding: 10, lineHeight: 1.6 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#89938d", fontSize: 9, margin: "5px 0 10px", flexWrap: "wrap" }}><span style={{ flex: "1 0 100%" }}>{voiceContext.length} 字 · 仅用于当前素材 · {asrLoading ? "腾讯云识别中…" : recordingMode || systemCapture ? "录音中，再次点击停止" : "等待输入"}</span><button onClick={() => void toggleMicrophone("overwrite", "voice")} style={{ ...smallButton, color: microphoneRef.current?.target === "voice" && recordingMode === "overwrite" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "voice" && recordingMode === "overwrite" ? "停止并覆写当前语音" : "语音覆写当前素材"}</button><button onClick={() => void toggleMicrophone("append", "voice")} style={{ ...smallButton, color: microphoneRef.current?.target === "voice" && recordingMode === "append" ? "#b23838" : "#356b52" }}>{microphoneRef.current?.target === "voice" && recordingMode === "append" ? "停止并追加当前语音" : "语音追加当前素材"}</button><button onClick={() => void toggleSystemAudio()} style={{ ...smallButton, color: systemCapture ? "#b23838" : "#356b52" }}>{systemCapture ? "停止捕获系统声音" : "捕获系统声音"}</button><label style={{ ...smallButton, cursor: asrLoading ? "wait" : "pointer", opacity: asrLoading ? .55 : 1 }}>导入语音文件<input disabled={asrLoading} type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm" style={{ display: "none" }} onChange={e => { const file = e.target.files?.[0]; if (file) void transcribeAudio(file, "append", "voice", current ? fileKey(current) : ""); e.target.value = ""; }} /></label><button onClick={() => { if (current) setVoiceByAsset(old => ({ ...old, [fileKey(current)]: "" })); }} style={{ border: 0, background: "none", color: "#557263", fontSize: 9 }}>清空</button></div>
