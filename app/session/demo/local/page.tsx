@@ -55,6 +55,7 @@ export default function LocalRecognitionPage() {
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const candidateGenerationStartedRef = useRef(false);
+  const dirtyAssetKeysRef = useRef(new Set<string>());
   const [activeFacetIndex, setActiveFacetIndex] = useState(0);
   const [facetChoice, setFacetChoice] = useState<Record<string, number>>({});
   const [hashByKey, setHashByKey] = useState<Record<string, string>>({});
@@ -100,6 +101,14 @@ export default function LocalRecognitionPage() {
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
   });
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+  useEffect(() => {
+    const readyKeys = Array.from(dirtyAssetKeysRef.current).filter(key => hashByKey[key]); if (!readyKeys.length) return;
+    const timer = window.setTimeout(() => {
+      const assets = readyKeys.flatMap(key => { const file = files.find(item => fileKey(item) === key); const hash = hashByKey[key]; return file && hash ? [{ hash, filename: file.name, relativePath: key, sourceContext: sourceFolders(file), size: file.size, mimeType: file.type, lastModified: file.lastModified, tags: (assignments[key] || []).filter(tag => tag.facet !== "原始目录") }] : []; });
+      if (!assets.length) return; fetch("/api/local-assets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "upsert", assets }) }).then(response => { if (response.ok) readyKeys.forEach(key => dirtyAssetKeysRef.current.delete(key)); }).catch(() => undefined);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [assignments, files, hashByKey]);
   useEffect(() => {
     if (!hydrated || !files.length) return;
     const timer = window.setTimeout(() => {
@@ -214,7 +223,8 @@ export default function LocalRecognitionPage() {
     catch (e) { setError(e instanceof Error ? e.message : "候选标签生成失败"); return false; } finally { setCandidateLoading(false); }
   };
   const applyFacetTag = (tag: Tag) => {
-    const targets = selectedFiles.size ? selectedFiles : new Set(current ? [fileKey(current)] : []); if (!targets.size) return;
+    const targets = selectedFiles.size > 1 ? selectedFiles : new Set(current ? [fileKey(current)] : []); if (!targets.size) return;
+    targets.forEach(key => dirtyAssetKeysRef.current.add(key));
     setAssignments(old => { const next = { ...old }; targets.forEach(key => { const existing = next[key] || []; next[key] = [...existing.filter(item => item.facet !== tag.facet), { ...tag, status: "confirmed", source: tag.reason.includes("候选") ? "candidate" : "ai_confirmed" }]; }); return next; });
   };
   const chooseFacetTag = (tag: Tag) => {
