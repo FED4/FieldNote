@@ -206,8 +206,8 @@ export default function LocalRecognitionPage() {
   };
   const generateCandidates = async () => {
     setCandidateLoading(true); setError("");
-    try { const response = await fetch("/api/vita/candidates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemPrompt: prompt }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "生成失败"); setCandidateTags(old => { const manual = old.filter(tag => tag.reason === "人工候选"); return ensureUncertain(cleanCandidateTags([...(body.candidates || []), ...manual])); }); }
-    catch (e) { setError(e instanceof Error ? e.message : "候选标签生成失败"); } finally { setCandidateLoading(false); }
+    try { const response = await fetch("/api/vita/candidates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemPrompt: prompt }) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "生成失败"); const generated = cleanCandidateTags(body.candidates || []); if (!generated.length) throw new Error("System Prompt 没有生成任何候选标签，请补充候选名称或规则"); setCandidateTags(old => { const manual = old.filter(tag => tag.reason === "人工候选"); return ensureUncertain(cleanCandidateTags([...generated, ...manual])); }); return true; }
+    catch (e) { setError(e instanceof Error ? e.message : "候选标签生成失败"); return false; } finally { setCandidateLoading(false); }
   };
   const useCandidate = (tag: Tag) => {
     setResult(old => { const tags = old?.tags || []; const existing = tags.findIndex(item => item.facet === tag.facet && item.name === tag.name); if (existing >= 0) { setSelectedTags(selected => new Set(selected).add(existing)); return old; } const index = tags.length; setSelectedTags(selected => new Set(selected).add(index)); return { summary: old?.summary || "人工选择候选标签", tags: [...tags, { ...tag, confidence: 1, reason: "从候选标签库人工选择" }] }; });
@@ -223,7 +223,7 @@ export default function LocalRecognitionPage() {
 
   const beginTagging = async () => {
     if (!files.length) { setError("请先选择包含图片或视频的文件夹"); return; }
-    localStorage.setItem("vita-system-prompt", prompt); setRecommendationCache({}); setPrefetchProgress({ done: 0, total: 0 }); await generateCandidates(); setWorkflowStep("tagging");
+    localStorage.setItem("vita-system-prompt", prompt); setRecommendationCache({}); setPrefetchProgress({ done: 0, total: 0 }); if (await generateCandidates()) setWorkflowStep("tagging");
   };
 
   if (workflowStep === "setup") return <main style={{ minHeight: "100vh", overflow: "auto", background: "#f3f5f2", padding: 24 }}>
